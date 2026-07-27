@@ -571,23 +571,23 @@ fn renderKeyHints(a: *const App, width: usize, w: *Writer) !void {
 // Logo
 // ---------------------------------------------------------------------------
 
-/// Three stacked containers over a box-drawing wordmark. Every line is 29
-/// columns wide; each glyph is single-width, so `displayWidth` measures it
-/// correctly.
-const logo_boxes = [_][]const u8{
-    "  ╭───────╮╭───────╮╭───────╮",
-    "  │▪ ▪ ▪ ▪││▪ ▪ ▪ ▪││▪ ▪ ▪ ▪│",
-    "  ╰───────╯╰───────╯╰───────╯",
-};
-
+/// Box-drawing wordmark spelling "zcontainer", one glyph per letter:
+///
+///     z    c    o    n    t    a   i   n    e    r
+///    ┌─┐  ┌─┐  ┌─┐  ┌┐┌  ┌┬┐  ┌─┐  ┬  ┌┐┌  ┌─┐  ┬─┐
+///    ┌─┘  │    │ │  │││   │   ├─┤  │  │││  ├┤   ├┬┘
+///    └─┘  └─┘  └─┘  ┘└┘   ┴   ┴ ┴  ┴  ┘└┘  └─┘  ┴└─
+///
+/// Every row must be exactly `logo_width` columns; a row that is one glyph
+/// too wide shifts the letters after it out of alignment. A test checks this.
+/// The rows carry no padding of their own — callers centre them.
 const logo_word = [_][]const u8{
-    " ┌─┐┌─┐┌─┐┌┐┌┌┬┐┌─┐┬┌┐┌┌─┐┬─┐",
-    " ┌─┘│  │ ││││ │ ├─┤│││││├┤ ├┬┘",
-    " └─┘└─┘└─┘┘└┘ ┴ ┴ ┴┴┘└┘└─┘┴└─",
+    "┌─┐┌─┐┌─┐┌┐┌┌┬┐┌─┐┬┌┐┌┌─┐┬─┐",
+    "┌─┘│  │ ││││ │ ├─┤││││├┤ ├┬┘",
+    "└─┘└─┘└─┘┘└┘ ┴ ┴ ┴┴┘└┘└─┘┴└─",
 };
 
-const logo_width = 29;
-const logo_height = logo_boxes.len + logo_word.len;
+const logo_width = 28;
 const tagline = "a TUI for Apple container";
 
 fn writeCentered(w: *Writer, row: usize, width: usize, text: []const u8, tint: []const u8) !void {
@@ -599,22 +599,20 @@ fn writeCentered(w: *Writer, row: usize, width: usize, text: []const u8, tint: [
 /// Full-screen splash, shown while the first refresh runs.
 pub fn renderSplash(size: term.Size, note: []const u8, w: *Writer) !void {
     try w.writeAll(esc.home ++ "\x1b[2J");
-    if (size.rows < logo_height + 4 or size.cols < logo_width) {
+    if (size.rows < logo_word.len + 4 or size.cols < logo_width) {
         try w.print("{s}{s}{s}", .{ color.accent, note, esc.reset });
         return;
     }
 
-    const block = logo_height + 3;
+    // wordmark, blank, tagline, blank, note
+    const block = logo_word.len + 4;
     const top = (@as(usize, size.rows) -| block) / 2 + 1;
 
-    for (logo_boxes, 0..) |line, i| {
-        try writeCentered(w, top + i, size.cols, line, color.accent);
-    }
     for (logo_word, 0..) |line, i| {
-        try writeCentered(w, top + logo_boxes.len + i, size.cols, line, esc.bold ++ color.fg_text);
+        try writeCentered(w, top + i, size.cols, line, esc.bold ++ color.accent);
     }
-    try writeCentered(w, top + logo_height + 1, size.cols, tagline, color.fg_dim);
-    try writeCentered(w, top + logo_height + 2, size.cols, note, color.fg_dim);
+    try writeCentered(w, top + logo_word.len + 1, size.cols, tagline, color.fg_dim);
+    try writeCentered(w, top + logo_word.len + 3, size.cols, note, color.fg_dim);
 }
 
 // ---------------------------------------------------------------------------
@@ -707,7 +705,9 @@ fn renderHelp(a: *const App, size: term.Size, w: *Writer) !void {
     if (show_logo) {
         for (logo_word) |line| {
             try w.writeAll("\r\n" ++ esc.bold ++ color.accent);
-            _ = try cell(w, line, width);
+            // Indented to sit under the help text's own margin.
+            _ = try writeCounted(w, "  ", 2);
+            _ = try cell(w, line, width -| 2);
             try w.writeAll(esc.reset);
             row += 1;
         }
@@ -810,6 +810,15 @@ fn truncateAt(text: []const u8, max_width: usize) usize {
         i += @min(len, text.len - i);
     }
     return i;
+}
+
+test "logo rows are all exactly logo_width columns" {
+    // A row one glyph too wide shifts every letter after it, which is how the
+    // wordmark's middle row was broken before.
+    for (logo_word, 0..) |line, i| {
+        errdefer std.debug.print("logo row {d}: {s}\n", .{ i, line });
+        try std.testing.expectEqual(logo_width, displayWidth(line));
+    }
 }
 
 test displayWidth {

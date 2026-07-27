@@ -4,11 +4,8 @@ A terminal UI for Apple's [`container`](https://github.com/apple/container)
 CLI on macOS, written in Zig.
 
 ```
-   ╭───────╮╭───────╮╭───────╮
-   │▪ ▪ ▪ ▪││▪ ▪ ▪ ▪││▪ ▪ ▪ ▪│
-   ╰───────╯╰───────╯╰───────╯
   ┌─┐┌─┐┌─┐┌┐┌┌┬┐┌─┐┬┌┐┌┌─┐┬─┐
-  ┌─┘│  │ ││││ │ ├─┤│││││├┤ ├┬┘
+  ┌─┘│  │ ││││ │ ├─┤││││├┤ ├┬┘
   └─┘└─┘└─┘┘└┘ ┴ ┴ ┴┴┘└┘└─┘┴└─
     a TUI for Apple container
 ```
@@ -40,13 +37,26 @@ shop-db               running     docker.io/library/postgres:…  192.168.64.2  
 zig build run
 ```
 
-Or build an optimised binary:
+Or build an optimised binary tuned for the machine it is built on:
 
 ```bash
-zig build -Doptimize=ReleaseSafe
+zig build -Doptimize=ReleaseFast -Dcpu=native
 ```
 
-The executable lands in `zig-out/bin/zcontainer`.
+`-Dcpu=native` compiles for the host CPU's instruction set extensions rather
+than the architecture baseline. Do not expect a speedup: zcontainer spends
+nearly all its time waiting on subprocesses and terminal writes, and has no
+compute-bound path to accelerate. On Apple silicon the native and baseline
+binaries come out within a few bytes of each other.
+
+ReleaseSafe keeps the bounds and overflow checks, which is worth ~70 KB for a
+tool that parses JSON and log output it does not control:
+
+```bash
+zig build -Doptimize=ReleaseSafe -Dcpu=native
+```
+
+Either way the executable lands in `zig-out/bin/zcontainer`.
 
 ```bash
 zig build test
