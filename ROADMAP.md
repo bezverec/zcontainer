@@ -1,0 +1,130 @@
+# Roadmap
+
+Where zcontainer is heading, and why in that order. Nothing here is a promise;
+it is a record of what looks worth doing next and what it would cost.
+
+## Where it stands (v0.0.1)
+
+Two front ends — a TUI and a browser page — over one shared data layer
+(`cli.zig`). Both can list containers, stacks, images, volumes, networks and
+live stats, and can start, stop, kill, delete and prune. The TUI additionally
+follows logs and opens a shell.
+
+Everything is read through `container --format json` and acted on by shelling
+out. There is no daemon protocol, no cache and no state on disk.
+
+## The honest first priority: a fake `container`
+
+The highest-leverage work is not a feature.
+
+All 20 tests exercise pure functions — column widths, byte formatting, stack
+grouping, token comparison. **Nothing tests the program against the `container`
+CLI itself.** Parsing, action dispatch and every error path are covered only by
+having run them by hand against one machine's setup.
+
+The fix is a fake `container` executable placed first on `PATH` during tests: a
+small script that prints canned JSON and records the argv it was called with.
+That unlocks, in one move:
+
+- decoding real fixtures, including a **stopped** container, an untagged image
+  and an empty daemon — none of which the live machine has ever presented
+- asserting that pressing `d` runs `container delete --force <id>` and nothing
+  else, which is the kind of mistake no unit test currently catches
+- error paths: non-zero exits, malformed JSON, a missing binary
+- CI, where no container daemon exists at all
+
+Until this exists, every change carries more risk than the green test count
+suggests. Everything below assumes it lands first.
+
+## v0.1 — filling in the obvious gaps
+
+**Sort and filter.** Lists are fixed-order and unfiltered. With more than a
+handful of containers that stops scaling. `/` to filter, click or key to sort.
+Cheap, and it makes every other view better.
+
+**Bulk selection.** Space to mark rows, then act on the marks. The stack
+actions already prove the tally-reporting pattern.
+
+**Ports column and per-container detail in the browser.** The web page shows
+less than the TUI does; published ports and mounts are already in the payload
+and simply are not rendered.
+
+**Copy files (`container cp`).** One command, no streaming, immediately useful.
+
+## v0.2 — streaming in the browser
+
+`std.http.Server` has `respondWebSocket`, so this needs no new dependency —
+I checked. Two features fall out of the same machinery:
+
+**Live log follow**, matching what the TUI already does.
+
+**A shell in the browser**, running `container exec -it` with the pty bridged
+over the socket. This is the largest single piece of work on the list and the
+one most likely to be fiddly: terminal resizing, escape handling, and a
+front-end terminal emulator that has to be written by hand or vendored, which
+would break the zero-dependency property the web front end currently has.
+Worth weighing against simply telling people to use the TUI.
+
+## v0.3 — creating things
+
+Today zcontainer manages containers that already exist. This is the biggest
+functional gap.
+
+**Run a container.** `container run` takes about fifty distinct options. A form
+exposing all of them would be worse than the CLI. A useful subset — image, name, ports, env,
+volumes, cpus, memory, detach, entrypoint — covers most day-to-day use, with
+an escape hatch showing the exact command it will run so nothing is hidden.
+
+**Pull an image**, with progress. Needs the streaming work from v0.2.
+
+**Build from a Dockerfile.** Same streaming requirement, plus build context
+selection. `container builder` also has its own lifecycle worth surfacing —
+the builder shows up today as just another container.
+
+## Foundations, alongside the above
+
+**CI.** There is none. With the fake `container` in place, a workflow can build
+and test on every push.
+
+**Distributed binaries.** Releases carry no artifacts today, because a
+`-Dcpu=native` build is tuned to the machine that produced it. A `baseline`
+build attached to the release would let people skip installing Zig.
+
+**Wide characters.** Every glyph is counted as one column. A container named in
+CJK, or an emoji in a log line, will misalign a row. `cli.zig` is already safe;
+this is `ui.zig` arithmetic only.
+
+**Split `app.zig`.** It is past 1200 lines and now holds state, refresh, stack
+grouping, CPU sampling, pager and actions. Splitting follows naturally the
+next time one of those grows.
+
+**Config file.** Refresh interval, default tab, the shell used by `e`, whether
+delete implies `--force`. All hard-coded today.
+
+## Deliberately not planned
+
+**Registry credentials in any UI.** `container registry login` handles
+passwords and tokens. Those belong in the terminal where the CLI can use the
+keychain, not in a browser form or a TUI prompt that has to hold them in
+process memory. zcontainer will show *which* registries are logged in, and
+nothing more.
+
+**Remote or multi-host management.** The web server binds loopback and has no
+TLS by design. Exposing it to a network would mean auth, transport security and
+an audit trail — a different product.
+
+**A daemon protocol.** Shelling out to `container` keeps zcontainer honest: the
+tool shows what the CLI reports, and every action is one the user could have
+typed. Talking to the daemon directly would be faster and much easier to get
+subtly wrong.
+
+## Constraints worth remembering
+
+- `container inspect` returns the same shape the list endpoint already
+  provides, so a detail view needs no extra call — the TUI builds its detail
+  sheets from data it already has.
+- `container stats` gives cumulative CPU time and no ordering guarantee. Both
+  are already handled (deltas, and a stable sort), and both will bite again in
+  any new view that consumes it.
+- `container system dns` requires administrator rights, so anything built on it
+  has to degrade gracefully rather than assume it can run.

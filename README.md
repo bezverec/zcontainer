@@ -269,6 +269,12 @@ display rather than one cell:
   characters are counted as one column each and will misalign a row.
 - Only the first network of a container is shown in the table.
 
+## What's next
+
+See [ROADMAP.md](ROADMAP.md). The short version: the next piece of work is a
+fake `container` executable for the tests, because nothing currently exercises
+this program against the CLI it wraps.
+
 ## License
 
 GPL-3.0. See [LICENSE](LICENSE).
