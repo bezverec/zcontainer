@@ -3,11 +3,15 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const build_options = @import("build_options");
+
 const term = @import("term.zig");
 const ui = @import("ui.zig");
 const cli = @import("cli.zig");
 const app_mod = @import("app.zig");
 const App = app_mod.App;
+
+pub const version = build_options.version;
 
 /// How often the list reloads by itself while idle.
 const auto_refresh_ms = 3000;
@@ -20,10 +24,25 @@ const ctrl_c = 0x03;
 const ctrl_d = 0x04;
 const ctrl_u = 0x15;
 
+const usage =
+    \\zcontainer — a TUI for the Apple container CLI
+    \\
+    \\usage: zcontainer [options]
+    \\
+    \\  -v, --version   print the version and exit
+    \\  -h, --help      print this message and exit
+    \\
+    \\Run with no arguments to open the interface. Press ? inside it for the
+    \\key bindings, or q to quit.
+    \\
+;
+
 pub fn main(init: std.process.Init) !void {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     defer _ = debug_allocator.deinit();
     const gpa = debug_allocator.allocator();
+
+    if (try handleArgs(init)) return;
 
     var terminal = term.Terminal.init(init.io) catch {
         std.debug.print("zcontainer: stdin is not a terminal\n", .{});
@@ -121,6 +140,28 @@ fn runShell(terminal: *term.Terminal, app: *App, io: std.Io, target: []const u8)
         app.setStatus(true, "could not open a shell in {s}", .{target});
     }
     app.refresh();
+}
+
+/// Handles the flags that print and exit. Returns true when the caller should
+/// stop rather than open the interface.
+fn handleArgs(init: std.process.Init) !bool {
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
+    if (args.len < 2) return false;
+
+    var out_buf: [1024]u8 = undefined;
+    var out: std.Io.File.Writer = .init(.stdout(), init.io, &out_buf);
+    const w = &out.interface;
+
+    const arg = args[1];
+    if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--version")) {
+        try w.print("zcontainer {s}\n", .{version});
+    } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+        try w.writeAll(usage);
+    } else {
+        try w.print("zcontainer: unknown argument '{s}'\n\n{s}", .{ arg, usage });
+    }
+    try w.flush();
+    return true;
 }
 
 /// Rows the pager shows: header, title and key hints take the rest.

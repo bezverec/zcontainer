@@ -97,6 +97,19 @@ zcontainer
 Uninstalling is deleting that one file; zcontainer writes no config, cache or
 state of its own.
 
+## Command line
+
+zcontainer takes no arguments in normal use — everything happens inside the
+interface. Two flags print and exit:
+
+```bash
+zcontainer --version   # or -v
+zcontainer --help      # or -h
+```
+
+The version comes from `build.zig.zon`, so the manifest, `--version` and the
+header inside the interface cannot drift apart.
+
 ## Tabs
 
 | Tab | Shows |

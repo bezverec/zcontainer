@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const Writer = std.Io.Writer;
+const build_options = @import("build_options");
 
 const term = @import("term.zig");
 const cli = @import("cli.zig");
@@ -129,8 +130,12 @@ fn renderHeader(a: *const App, width: usize, w: *Writer) !void {
     try w.writeAll(esc.reset ++ color.bg_bar ++ color.fg_dim);
 
     var buf: [128]u8 = undefined;
-    const summary = std.fmt.bufPrint(&buf, "  {d}/{d} running", .{ running, a.containers.len }) catch "";
-    used += try writeCounted(w, summary, summary.len);
+    const summary = std.fmt.bufPrint(&buf, " v{s}  {d}/{d} running", .{
+        build_options.version,
+        running,
+        a.containers.len,
+    }) catch "";
+    used += try writeCounted(w, summary, displayWidth(summary));
 
     // Right-aligned system status.
     const state_color = if (std.mem.eql(u8, a.system, "running")) color.green else color.yellow;
@@ -635,7 +640,10 @@ pub fn renderSplash(size: term.Size, note: []const u8, w: *Writer) !void {
     for (logo_word, 0..) |line, i| {
         try writeCentered(w, top + i, size.cols, line, esc.bold ++ color.accent);
     }
-    try writeCentered(w, top + logo_word.len + 1, size.cols, tagline, color.fg_dim);
+
+    var buf: [128]u8 = undefined;
+    const subtitle = std.fmt.bufPrint(&buf, "{s} · v{s}", .{ tagline, build_options.version }) catch tagline;
+    try writeCentered(w, top + logo_word.len + 1, size.cols, subtitle, color.fg_dim);
     try writeCentered(w, top + logo_word.len + 3, size.cols, note, color.fg_dim);
 }
 
