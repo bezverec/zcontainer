@@ -511,13 +511,14 @@ fn renderKeyHints(a: *const App, width: usize, w: *Writer) !void {
     const hints: []const [2][]const u8 = switch (a.view) {
         .confirm => &.{ .{ "y", "confirm" }, .{ "n/esc", "cancel" } },
         .pager => if (a.isFollowing())
-            &.{ .{ "j/k", "scroll" }, .{ "G", "tail" }, .{ "f", "stop follow" }, .{ "esc", "back" } }
+            &.{ .{ "↑↓ j/k", "scroll" }, .{ "G", "tail" }, .{ "f", "stop follow" }, .{ "esc", "back" } }
         else
-            &.{ .{ "j/k", "scroll" }, .{ "g/G", "top/end" }, .{ "f", "follow" }, .{ "esc", "back" }, .{ "q", "quit" } },
+            &.{ .{ "↑↓ j/k", "scroll" }, .{ "g/G", "top/end" }, .{ "f", "follow" }, .{ "esc", "back" } },
         .help => &.{ .{ "esc", "back" }, .{ "q", "quit" } },
         .list => switch (a.tab) {
             .containers, .stats => &.{
-                .{ "j/k", "move" },
+                .{ "↑↓ j/k", "move" },
+                .{ "↵", "details" },
                 .{ "s", "start" },
                 .{ "S", "stop" },
                 .{ "K", "kill" },
@@ -525,46 +526,69 @@ fn renderKeyHints(a: *const App, width: usize, w: *Writer) !void {
                 .{ "l", "logs" },
                 .{ "e", "shell" },
                 .{ "P", "prune" },
-                .{ "↵", "details" },
                 .{ "?", "help" },
+                .{ "q", "quit" },
             },
             .stacks => &.{
-                .{ "j/k", "move" },
+                .{ "↑↓ j/k", "move" },
+                .{ "↵", "members" },
                 .{ "s", "start all" },
                 .{ "S", "stop all" },
                 .{ "d", "delete all" },
-                .{ "↵", "members" },
-                .{ "r", "refresh" },
                 .{ "?", "help" },
+                .{ "q", "quit" },
             },
             .images, .volumes, .networks => &.{
-                .{ "j/k", "move" },
+                .{ "↑↓ j/k", "move" },
+                .{ "↵", "details" },
                 .{ "d", "delete" },
                 .{ "P", "prune" },
-                .{ "↵", "details" },
                 .{ "r", "refresh" },
-                .{ "tab", "next tab" },
                 .{ "?", "help" },
+                .{ "q", "quit" },
             },
         },
     };
 
     try w.writeAll(color.bg_bar);
-    var used: usize = 0;
-    for (hints) |h| {
-        // key + space + label + two trailing spaces
-        const needed = 1 + h[0].len + 1 + h[1].len + 2;
-        if (used + needed > width) break;
-        try w.writeAll(color.accent ++ esc.bold);
-        used += try writeCounted(w, " ", 1);
-        used += try writeCounted(w, h[0], displayWidth(h[0]));
-        try w.writeAll(esc.reset ++ color.bg_bar ++ color.fg_dim);
-        used += try writeCounted(w, " ", 1);
-        used += try writeCounted(w, h[1], h[1].len);
-        used += try writeCounted(w, " ", 1);
+    if (hints.len == 0) {
+        try w.splatByteAll(' ', width);
+        try w.writeAll(esc.reset);
+        return;
     }
-    if (width > used) try w.splatByteAll(' ', width - used);
+
+    // The last hint is the way out of the current view. It is drawn against
+    // the right edge and its width reserved up front, so that it survives on
+    // a terminal too narrow for the whole bar rather than being the first
+    // thing dropped.
+    const exit_hint = hints[hints.len - 1];
+    const reserved = hintWidth(exit_hint);
+
+    var used: usize = 0;
+    for (hints[0 .. hints.len - 1]) |h| {
+        if (used + hintWidth(h) + reserved > width) break;
+        used += try writeHint(w, h);
+    }
+    if (width > used + reserved) try w.splatByteAll(' ', width - used - reserved);
+    if (width >= reserved) _ = try writeHint(w, exit_hint);
     try w.writeAll(esc.reset);
+}
+
+/// Columns one hint occupies: a leading space, the key, a space, the label
+/// and a trailing space.
+fn hintWidth(h: [2][]const u8) usize {
+    return displayWidth(h[0]) + displayWidth(h[1]) + 3;
+}
+
+fn writeHint(w: *Writer, h: [2][]const u8) !usize {
+    try w.writeAll(color.accent ++ esc.bold);
+    var used = try writeCounted(w, " ", 1);
+    used += try writeCounted(w, h[0], displayWidth(h[0]));
+    try w.writeAll(esc.reset ++ color.bg_bar ++ color.fg_dim);
+    used += try writeCounted(w, " ", 1);
+    used += try writeCounted(w, h[1], displayWidth(h[1]));
+    used += try writeCounted(w, " ", 1);
+    return used;
 }
 
 // ---------------------------------------------------------------------------
@@ -661,10 +685,11 @@ fn renderPager(a: *const App, size: term.Size, w: *Writer) !void {
 }
 
 const help_text =
-    \\  Navigation
-    \\    j / k, arrows   move                 g / G           first / last
-    \\    ctrl-d / ctrl-u half page            1 … 6           select tab
-    \\    tab / shift-tab cycle tabs           enter           details
+    \\  Navigation — the arrow keys work everywhere the vi keys do
+    \\    ↑ ↓  or  j / k  move                 ← →             previous / next tab
+    \\    home / end      first / last         g / G           first / last
+    \\    pg up / pg dn   move a screen        ctrl-d / ctrl-u half a screen
+    \\    1 … 6           select tab           tab / shift-tab cycle tabs
     \\
     \\  Containers and Stats tabs
     \\    s  start           S  stop           K  kill         d  delete
@@ -810,6 +835,49 @@ fn truncateAt(text: []const u8, max_width: usize) usize {
         i += @min(len, text.len - i);
     }
     return i;
+}
+
+/// Removes CSI escape sequences so a rendered frame can be compared as text.
+fn stripAnsi(out: []u8, input: []const u8) []const u8 {
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < input.len) {
+        if (input[i] != 0x1b) {
+            out[n] = input[i];
+            n += 1;
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if (i < input.len and input[i] == '[') i += 1;
+        while (i < input.len and (input[i] < 0x40 or input[i] > 0x7e)) i += 1;
+        if (i < input.len) i += 1;
+    }
+    return out[0..n];
+}
+
+test "key hint bar keeps the exit hint at every width" {
+    var frame: [4096]u8 = undefined;
+    var plain: [4096]u8 = undefined;
+
+    var app: App = .init(std.testing.allocator, undefined);
+    defer app.deinit();
+    app.view = .list;
+
+    for (std.enums.values(Tab)) |tab| {
+        app.tab = tab;
+        var width: usize = min_cols;
+        while (width <= 200) : (width += 7) {
+            var w: Writer = .fixed(&frame);
+            try renderKeyHints(&app, width, &w);
+            const text = stripAnsi(&plain, w.buffered());
+
+            // The bar fills its line exactly, and the way out is never the
+            // hint that gets dropped when space runs short.
+            try std.testing.expectEqual(width, displayWidth(text));
+            try std.testing.expect(std.mem.endsWith(u8, text, "q quit "));
+        }
+    }
 }
 
 test "logo rows are all exactly logo_width columns" {

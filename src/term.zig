@@ -17,6 +17,7 @@ pub const esc = struct {
     pub const cursor_show = "\x1b[?25h";
     pub const home = "\x1b[H";
     pub const clear_line = "\x1b[K";
+    pub const clear_screen = "\x1b[2J";
     pub const reset = "\x1b[0m";
     pub const bold = "\x1b[1m";
     pub const dim = "\x1b[2m";
@@ -106,7 +107,11 @@ pub const Terminal = struct {
 
     pub fn leaveAltScreen(self: *Terminal) void {
         if (!self.alt) return;
-        self.writeAll(esc.cursor_show ++ esc.alt_screen_off);
+        // Clear before leaving. When the alternate screen works this wipes a
+        // buffer that is about to be discarded anyway, but when the terminal
+        // does not support it the frame was drawn on the primary screen and
+        // would otherwise be left behind on exit.
+        self.writeAll(esc.home ++ esc.clear_screen ++ esc.cursor_show ++ esc.alt_screen_off);
         self.alt = false;
     }
 

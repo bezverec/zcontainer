@@ -62,6 +62,41 @@ Either way the executable lands in `zig-out/bin/zcontainer`.
 zig build test
 ```
 
+## Install
+
+zcontainer is a single self-contained binary — installing it means putting
+that one file somewhere on your `PATH`.
+
+Into a user-owned directory, no `sudo` needed:
+
+```bash
+zig build -Doptimize=ReleaseFast -Dcpu=native --prefix ~/.local
+```
+
+That writes `~/.local/bin/zcontainer`. If `~/.local/bin` is not on your `PATH`
+yet, add it:
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+```
+
+System-wide instead, which needs `sudo` because `/usr/local/bin` is
+root-owned:
+
+```bash
+zig build -Doptimize=ReleaseFast -Dcpu=native
+sudo install -m 755 zig-out/bin/zcontainer /usr/local/bin/
+```
+
+Then, from anywhere:
+
+```bash
+zcontainer
+```
+
+Uninstalling is deleting that one file; zcontainer writes no config, cache or
+state of its own.
+
 ## Tabs
 
 | Tab | Shows |
@@ -99,10 +134,15 @@ open.
 
 ## Keys
 
+Every list and the log viewer are navigable with the arrow keys as well as the
+vi-style keys; `q` quits from anywhere.
+
 | Key | Action |
 | --- | --- |
-| `j` / `k`, arrows | Move the cursor |
-| `g` / `G` | Jump to first / last row |
+| `↑` / `↓`, `j` / `k` | Move the cursor |
+| `←` / `→` | Previous / next tab |
+| `page up` / `page down` | Move a screen at a time |
+| `home` / `end`, `g` / `G` | Jump to first / last row |
 | `ctrl-d` / `ctrl-u` | Half page down / up |
 | `1` … `6` | Select tab directly |
 | `tab` / `shift-tab` | Cycle tabs |
