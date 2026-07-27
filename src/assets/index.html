@@ -1,0 +1,403 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zcontainer</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfc; --panel: #fff; --line: #e3e4e8; --text: #1c1d21;
+    --dim: #6c6f7a; --accent: #2a6df4; --green: #1a8a4a; --amber: #9a6a00;
+    --red: #c8342b; --sel: #eef3ff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16171a; --panel: #1d1f23; --line: #2c2f35; --text: #e6e7ea;
+      --dim: #9096a1; --accent: #6f9dff; --green: #4cc47f; --amber: #d9a441;
+      --red: #ef6a60; --sel: #23303f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 12px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
+    position: sticky; top: 0; z-index: 5;
+  }
+  .brand { font-weight: 650; letter-spacing: .2px; }
+  .brand span { color: var(--dim); font-weight: 400; margin-left: 6px; }
+  .spacer { flex: 1; }
+  .pill {
+    font-size: 12px; color: var(--dim); border: 1px solid var(--line);
+    border-radius: 999px; padding: 2px 10px;
+  }
+  .pill.ok { color: var(--green); border-color: currentColor; }
+  .pill.bad { color: var(--red); border-color: currentColor; }
+  nav { display: flex; gap: 4px; padding: 10px 18px 0; flex-wrap: wrap; }
+  nav button {
+    font: inherit; color: var(--dim); background: none; cursor: pointer;
+    border: 1px solid transparent; border-radius: 8px 8px 0 0;
+    padding: 7px 13px; border-bottom: none;
+  }
+  nav button.on {
+    color: var(--text); background: var(--panel);
+    border-color: var(--line); font-weight: 600;
+  }
+  nav button .count { color: var(--dim); font-weight: 400; margin-left: 6px; }
+  main { padding: 0 18px 24px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 0 10px 10px 10px; overflow: hidden;
+  }
+  table { border-collapse: collapse; width: 100%; }
+  th, td {
+    text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 380px;
+  }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--dim); font-weight: 600; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--sel); }
+  td.num { font-variant-numeric: tabular-nums; }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; }
+  .state { font-weight: 600; }
+  .state.running { color: var(--green); }
+  .state.stopped { color: var(--dim); }
+  .state.other   { color: var(--amber); }
+  .actions { display: flex; gap: 6px; justify-content: flex-end; }
+  button.act {
+    font: inherit; font-size: 12px; padding: 3px 9px; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 6px;
+    background: var(--bg); color: var(--text);
+  }
+  button.act:hover { border-color: var(--accent); color: var(--accent); }
+  button.act.danger:hover { border-color: var(--red); color: var(--red); }
+  button.act[disabled] { opacity: .4; cursor: default; }
+  .empty { padding: 34px; text-align: center; color: var(--dim); }
+  .bar {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 9px 14px; border-bottom: 1px solid var(--line); color: var(--dim); font-size: 13px;
+  }
+  #msg { padding: 9px 18px; font-size: 13px; }
+  #msg.err { color: var(--red); }
+  dialog {
+    border: 1px solid var(--line); border-radius: 12px; padding: 0;
+    background: var(--panel); color: var(--text); max-width: min(860px, 92vw);
+  }
+  dialog::backdrop { background: #0008; }
+  dialog .head {
+    padding: 12px 16px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 12px; font-weight: 600;
+  }
+  dialog pre {
+    margin: 0; padding: 14px 16px; max-height: 62vh; overflow: auto;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px;
+    white-space: pre-wrap; word-break: break-word;
+  }
+</style>
+
+<header>
+  <div class="brand">zcontainer<span id="version"></span></div>
+  <div class="spacer"></div>
+  <div class="pill" id="running">–</div>
+  <div class="pill" id="system">–</div>
+  <button class="act" id="refresh">Refresh</button>
+</header>
+
+<nav id="tabs"></nav>
+<main>
+  <div class="panel">
+    <div class="bar" id="bar"></div>
+    <div id="view"></div>
+  </div>
+  <div id="msg"></div>
+</main>
+
+<dialog id="modal">
+  <div class="head"><span id="modal-title"></span><span class="spacer"></span>
+    <button class="act" onclick="document.getElementById('modal').close()">Close</button>
+  </div>
+  <pre id="modal-body"></pre>
+</dialog>
+
+<script>
+const TOKEN = window.ZC_TOKEN;
+const TABS = ["containers", "stacks", "images", "volumes", "networks", "stats"];
+let tab = "containers";
+let state = null;
+let busy = false;
+
+const $ = (id) => document.getElementById(id);
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: { ...(opts.headers || {}), "x-zcontainer-token": TOKEN },
+  });
+  if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
+  return res.json();
+}
+
+function bytes(n) {
+  if (!n) return "0 B";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0, v = n;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return `${i === 0 || v >= 100 ? Math.round(v) : v.toFixed(1)} ${u[i]}`;
+}
+
+function age(iso) {
+  if (!iso) return "";
+  const s = (Date.now() - Date.parse(iso)) / 1000;
+  if (isNaN(s)) return "";
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+function stateClass(s) {
+  return s === "running" ? "running" : s === "stopped" ? "stopped" : "other";
+}
+
+// Builds stacks the same way the server labels them: containers sharing a
+// stack name, everything else standalone.
+function stacks() {
+  const groups = new Map();
+  for (const c of state.containers) {
+    const name = c.stack || "(standalone)";
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(c);
+  }
+  return [...groups].map(([name, members]) => ({
+    name,
+    members,
+    running: members.filter((m) => m.state === "running").length,
+    cpus: members.reduce((a, m) => a + m.cpus, 0),
+    memory: members.reduce((a, m) => a + m.memory_bytes, 0),
+  })).sort((a, b) => (b.running > 0) - (a.running > 0) || a.name.localeCompare(b.name));
+}
+
+function count(name) {
+  if (!state) return 0;
+  if (name === "stacks") return stacks().length;
+  return (state[name] || []).length;
+}
+
+// Tab buttons are built once and then only updated in place. Replacing them
+// on every poll would also replace whatever the pointer is currently over.
+function renderTabs() {
+  const host = $("tabs");
+  if (!host.children.length) {
+    for (const name of TABS) {
+      const b = document.createElement("button");
+      b.dataset.tab = name;
+      b.innerHTML = `${name[0].toUpperCase() + name.slice(1)}<span class="count"></span>`;
+      b.onclick = () => { tab = name; render(); };
+      host.append(b);
+    }
+  }
+  for (const b of host.children) {
+    b.className = b.dataset.tab === tab ? "on" : "";
+    b.querySelector(".count").textContent = count(b.dataset.tab);
+  }
+}
+
+function table(head, rows) {
+  if (!rows.length) return `<div class="empty">nothing here</div>`;
+  return `<table><thead><tr>${head.map((h) => `<th>${h}</th>`).join("")}</tr></thead>
+    <tbody>${rows.join("")}</tbody></table>`;
+}
+
+function act(label, kind, target, danger) {
+  const confirmed = danger ? ` data-confirm="1"` : "";
+  return `<button class="act${danger ? " danger" : ""}" data-kind="${kind}" data-target="${target}"${confirmed}>${label}</button>`;
+}
+
+// Assigning innerHTML unconditionally would rebuild the row under the
+// pointer on every poll, so a click landing at that moment could hit a
+// different container's button. Only write when the markup actually changed.
+function put(el, html) {
+  if (el.innerHTML !== html) el.innerHTML = html;
+}
+
+function renderView() {
+  const v = $("view");
+  const bar = $("bar");
+  let barHtml = "";
+
+  if (!state) { put(v, `<div class="empty">loading…</div>`); return; }
+
+  if (tab === "containers") {
+    put(v, table(
+      ["Name", "State", "Image", "IP", "CPU", "Memory", ""],
+      state.containers.map((c) => `<tr>
+        <td class="mono">${c.id}</td>
+        <td class="state ${stateClass(c.state)}">${c.state}</td>
+        <td class="mono" title="${c.image}">${c.image}</td>
+        <td class="mono num">${c.ip || "–"}</td>
+        <td class="num">${c.cpus}</td>
+        <td class="num">${bytes(c.memory_bytes)}</td>
+        <td><div class="actions">
+          ${c.state === "running"
+            ? act("Stop", "stop", c.id, true) + act("Kill", "kill", c.id, true)
+            : act("Start", "start", c.id, false)}
+          <button class="act" data-logs="${c.id}">Logs</button>
+          ${act("Delete", "delete-container", c.id, true)}
+        </div></td></tr>`),
+    ));
+    const running = state.containers.filter((c) => c.state === "running").length;
+    barHtml = `<span>${running} running of ${state.containers.length}</span>`
+      + `<span class="spacer"></span>`
+      + act("Prune stopped", "prune-containers", "", true);
+  } else if (tab === "stacks") {
+    put(v, table(
+      ["Stack", "State", "Containers", "CPU", "Memory", ""],
+      stacks().map((s) => `<tr>
+        <td class="mono">${s.name}</td>
+        <td class="state ${s.running === 0 ? "stopped" : s.running === s.members.length ? "running" : "other"}">
+          ${s.running === 0 ? "stopped" : s.running === s.members.length ? "running" : "partial"}</td>
+        <td>${s.members.map((m) => m.id).join(", ")}</td>
+        <td class="num">${s.cpus}</td>
+        <td class="num">${bytes(s.memory)}</td>
+        <td><div class="actions">
+          <button class="act" data-stack="${s.name}" data-stack-kind="start">Start all</button>
+          <button class="act danger" data-stack="${s.name}" data-stack-kind="stop" data-confirm="1">Stop all</button>
+        </div></td></tr>`),
+    ));
+  } else if (tab === "images") {
+    put(v, table(
+      ["Name", "Tag", "Reference", "Digest", "Arch", "Created", ""],
+      state.images.map((i) => `<tr>
+        <td class="mono">${i.name}</td><td>${i.tag}</td>
+        <td class="mono" title="${i.reference}">${i.reference}</td>
+        <td class="mono">${i.digest}</td><td>${i.arch}</td><td>${age(i.created)}</td>
+        <td><div class="actions">${act("Delete", "delete-image", i.reference, true)}</div></td></tr>`),
+    ));
+    barHtml = `<span>images ${bytes(state.disk.images.size_bytes)}, ${bytes(state.disk.images.reclaimable)} reclaimable</span>`
+      + `<span class="spacer"></span>`
+      + act("Prune unused", "prune-images", "", true);
+  } else if (tab === "volumes") {
+    put(v, table(
+      ["Name", "Driver", "Source", "Format", "Size", ""],
+      state.volumes.map((x) => `<tr>
+        <td class="mono">${x.name}</td><td>${x.driver}</td>
+        <td class="mono" title="${x.source}">${x.source}</td>
+        <td>${x.format}</td><td class="num">${bytes(x.size_bytes)}</td>
+        <td><div class="actions">${act("Delete", "delete-volume", x.name, true)}</div></td></tr>`),
+    ));
+  } else if (tab === "networks") {
+    put(v, table(
+      ["Name", "Mode", "Subnet", "Gateway", ""],
+      state.networks.map((n) => `<tr>
+        <td class="mono">${n.name}</td><td>${n.mode}</td>
+        <td class="mono num">${n.subnet}</td><td class="mono num">${n.gateway}</td>
+        <td><div class="actions">${act("Delete", "delete-network", n.name, true)}</div></td></tr>`),
+    ));
+  } else if (tab === "stats") {
+    put(v, table(
+      ["Name", "Memory", "Net Rx/Tx", "Block R/W", "PIDs"],
+      state.stats.map((s) => `<tr>
+        <td class="mono">${s.id}</td>
+        <td class="num">${bytes(s.memory_bytes)} / ${bytes(s.memory_limit)}</td>
+        <td class="num">${bytes(s.net_rx)} / ${bytes(s.net_tx)}</td>
+        <td class="num">${bytes(s.block_read)} / ${bytes(s.block_write)}</td>
+        <td class="num">${s.processes}</td></tr>`),
+    ));
+    const d = state.disk;
+    barHtml = `<span>disk — images ${bytes(d.images.size_bytes)} `
+      + `(${bytes(d.images.reclaimable)} reclaimable) · containers ${bytes(d.containers.size_bytes)} `
+      + `· volumes ${bytes(d.volumes.size_bytes)}</span>`;
+  }
+  put(bar, barHtml);
+}
+
+function render() {
+  renderTabs();
+  renderView();
+  if (state) {
+    const running = state.containers.filter((c) => c.state === "running").length;
+    $("running").textContent = `${running}/${state.containers.length} running`;
+    const sys = $("system");
+    sys.textContent = `system: ${state.system}`;
+    sys.className = "pill " + (state.system === "running" ? "ok" : "bad");
+  }
+}
+
+// An action result must outlive the refresh that immediately follows it,
+// otherwise the outcome is wiped before it can be read. Progress notes and
+// state errors are not sticky and get cleared normally.
+let sticky = false;
+
+function say(text, isError, isSticky = false) {
+  $("msg").textContent = text || "";
+  $("msg").className = isError ? "err" : "";
+  sticky = isSticky && !!text;
+}
+
+async function refresh() {
+  try {
+    state = await api("/api/state");
+    render();
+    if (state.error) say(state.error, true);
+    else if (!sticky) say("");
+  } catch (e) {
+    say(`cannot reach the server: ${e.message}`, true);
+  }
+}
+
+async function runAction(kind, target, label) {
+  if (busy) return;
+  busy = true;
+  say(`${label}…`);
+  try {
+    const q = new URLSearchParams({ kind, target });
+    const r = await api(`/api/action?${q}`, { method: "POST" });
+    say(r.ok ? `${label}: ok` : `${label}: ${r.message}`, !r.ok, true);
+  } catch (e) {
+    say(`${label}: ${e.message}`, true, true);
+  } finally {
+    busy = false;
+    await refresh();
+  }
+}
+
+document.addEventListener("click", async (ev) => {
+  const el = ev.target.closest("button");
+  if (!el) return;
+
+  if (el.dataset.logs) {
+    $("modal-title").textContent = `logs ${el.dataset.logs}`;
+    $("modal-body").textContent = "loading…";
+    $("modal").showModal();
+    try {
+      const r = await api(`/api/logs?target=${encodeURIComponent(el.dataset.logs)}`);
+      $("modal-body").textContent = r.text || "(no output)";
+    } catch (e) {
+      $("modal-body").textContent = e.message;
+    }
+    return;
+  }
+
+  if (el.dataset.stack) {
+    const s = stacks().find((x) => x.name === el.dataset.stack);
+    const kind = el.dataset.stackKind;
+    if (!s) return;
+    if (el.dataset.confirm && !confirm(`${kind} every container in ${s.name}?`)) return;
+    for (const m of s.members) await runAction(kind, m.id, `${kind} ${m.id}`);
+    return;
+  }
+
+  if (el.dataset.kind) {
+    const { kind, target } = el.dataset;
+    const label = target ? `${kind} ${target}` : kind;
+    if (el.dataset.confirm && !confirm(`${label}?\n\nThis cannot be undone.`)) return;
+    await runAction(kind, target, label);
+  }
+});
+
+$("refresh").onclick = refresh;
+refresh();
+setInterval(() => { if (!busy && !$("modal").open) refresh(); }, 3000);
+</script>

@@ -97,6 +97,40 @@ zcontainer
 Uninstalling is deleting that one file; zcontainer writes no config, cache or
 state of its own.
 
+## Browser interface
+
+`zcontainer-web` serves the same data over HTTP for a browser, sharing
+`cli.zig` with the TUI and adding only transport.
+
+```bash
+zig build web
+# or, once installed
+zcontainer-web
+```
+
+It prints a URL carrying a token; open that. `--port` picks a different port,
+`0` picks a free one.
+
+The page lists the same six views, refreshes every three seconds, and offers
+start, stop, kill, delete, prune and a log viewer. Container environment
+variables are deliberately **not** served — they routinely carry credentials,
+and a browser is a leakier place for them than a terminal.
+
+### Why the token
+
+The server can start, stop and delete containers, so it is locked down three
+ways:
+
+- It binds `127.0.0.1` only, so nothing off-machine can reach it.
+- Every request must present a random token minted at startup. A loopback port
+  is **not** an origin boundary — any page open in the browser can POST to it —
+  and the token is the part a cross-site request cannot guess. API calls carry
+  it in a header, which a cross-site form post cannot set.
+- Requests carrying an `Origin` header from anywhere else are refused, which
+  also blocks DNS rebinding.
+
+The token is compared in constant time and changes on every start.
+
 ## Command line
 
 zcontainer takes no arguments in normal use — everything happens inside the
@@ -194,14 +228,17 @@ restores the display when the shell exits.
 
 | File | Contents |
 | --- | --- |
-| `src/main.zig` | Entry point, event loop, key bindings, terminal handover |
+| `src/main.zig` | TUI entry point, event loop, key bindings, terminal handover |
 | `src/app.zig` | State, refresh, stack grouping, CPU sampling, actions |
 | `src/ui.zig` | Frame rendering, column layout, logo |
-| `src/cli.zig` | `container` invocation and JSON decoding |
+| `src/cli.zig` | `container` invocation and JSON decoding — shared |
 | `src/term.zig` | Raw mode, alternate screen, key decoding |
+| `src/web.zig` | HTTP server, token auth, JSON endpoints |
+| `src/assets/index.html` | The browser front end, embedded at build time |
 
 `app.zig` never touches the terminal and `ui.zig` never runs a command, so the
-rendering can be tested against plain buffers.
+rendering can be tested against plain buffers. `cli.zig` knows about neither,
+which is why the browser front end reuses it without a single change.
 
 Two invariants are pinned by tests because breaking them corrupts the whole
 display rather than one cell:
@@ -222,6 +259,12 @@ display rather than one cell:
 - Stack membership is inferred, not declared. Unrelated containers that happen
   to share a name prefix will be grouped together.
 - No create, run, pull, build or port editing. Use the CLI for those.
+- `zcontainer-web` handles one request at a time and closes each connection
+  after answering it. That is fine for one browser and a local daemon; it is
+  not a general-purpose server, and it has no TLS because it never leaves the
+  loopback interface.
+- The browser front end has no shell and no live log follow — those need a
+  terminal and a streaming transport respectively. Use the TUI for them.
 - Column values are assumed to be roughly ASCII. Wide (CJK) or combining
   characters are counted as one column each and will misalign a row.
 - Only the first network of a container is shown in the table.
