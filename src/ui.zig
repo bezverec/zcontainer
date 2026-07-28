@@ -63,14 +63,20 @@ fn renderList(a: *const App, size: term.Size, w: *Writer) !void {
     const n = a.itemCount();
 
     for (0..height) |row| {
-        const i = start + row;
+        const screen_row = start + row;
         try w.writeAll("\r\n");
-        if (i >= n) {
+        if (screen_row >= n) {
             try w.writeAll(esc.clear_line);
             continue;
         }
+        // Filtering and sorting mean the row on screen is not the index in
+        // the underlying list.
+        const i = a.sourceIndex(a.tab, screen_row) orelse {
+            try w.writeAll(esc.clear_line);
+            continue;
+        };
 
-        const is_selected = i == selected;
+        const is_selected = screen_row == selected;
         if (is_selected) try w.writeAll(color.bg_sel ++ esc.bold);
 
         switch (a.tab) {
@@ -104,7 +110,9 @@ fn renderList(a: *const App, size: term.Size, w: *Writer) !void {
 fn renderEmptyHint(a: *const App, width: usize, height: usize, w: *Writer) !void {
     if (a.itemCount() != 0) return;
 
-    const msg = switch (a.tab) {
+    // A filter that hides everything must say so, or an empty table reads as
+    // "nothing exists" rather than "nothing matched".
+    const msg = if (a.filter().len > 0) "no rows match the filter" else switch (a.tab) {
         .containers => "no containers",
         .stacks => "no stacks",
         .images => "no images",
@@ -477,19 +485,57 @@ fn renderStatusLine(a: *const App, width: usize, w: *Writer) !void {
         return;
     }
 
-    // The Stats tab has no per-row message of its own, so the otherwise idle
-    // status line carries the `system df` summary instead.
+    // While typing a filter the status line becomes the prompt, with a block
+    // cursor so it is obvious keystrokes are being captured.
+    if (a.filtering) {
+        try w.writeAll(color.accent ++ esc.bold);
+        var used = try writeCounted(w, " /", 2);
+        try w.writeAll(esc.reset ++ color.fg_text);
+        const query = a.filter();
+        used += try writeCounted(w, query, displayWidth(query));
+        try w.writeAll(esc.reverse);
+        used += try writeCounted(w, " ", 1);
+        try w.writeAll(esc.reset ++ color.fg_dim);
+        used += try writeCounted(w, "  enter to keep, esc to clear", 29);
+        if (width > used) try w.splatByteAll(' ', width - used);
+        try w.writeAll(esc.reset);
+        return;
+    }
+
     var disk_buf: [256]u8 = undefined;
-    const msg = if (a.status_len == 0 and a.tab == .stats)
+    var hint_buf: [256]u8 = undefined;
+    const msg = if (a.status_len > 0)
+        a.status()
+    else if (a.tab == .stats)
+        // The Stats tab has no per-row message, so the otherwise idle status
+        // line carries the `system df` summary instead.
         diskSummary(a, &disk_buf)
     else
-        a.status();
+        listHint(a, &hint_buf);
 
     try w.writeAll(if (a.status_is_error) color.red else color.fg_dim);
     var used = try writeCounted(w, " ", 1);
     used += try cell(w, msg, width -| 2);
     if (width > used) try w.splatByteAll(' ', width - used);
     try w.writeAll(esc.reset);
+}
+
+/// Describes the active filter and ordering, so a list that is hiding rows
+/// never looks like the whole truth.
+fn listHint(a: *const App, buf: []u8) []const u8 {
+    var sort_buf: [64]u8 = undefined;
+    const sort = a.sortLabel(&sort_buf);
+    const query = a.filter();
+    const shown = a.countFor(a.tab);
+    const total = a.totalFor(a.tab);
+
+    if (query.len > 0 and sort.len > 0) {
+        return std.fmt.bufPrint(buf, "filter \"{s}\" — {d} of {d} · {s}", .{ query, shown, total, sort }) catch "";
+    }
+    if (query.len > 0) {
+        return std.fmt.bufPrint(buf, "filter \"{s}\" — {d} of {d}", .{ query, shown, total }) catch "";
+    }
+    return sort;
 }
 
 fn diskSummary(a: *const App, buf: []u8) []const u8 {
@@ -515,44 +561,15 @@ fn bytesOrZero(buf: []u8, n: u64) []const u8 {
 fn renderKeyHints(a: *const App, width: usize, w: *Writer) !void {
     const hints: []const [2][]const u8 = switch (a.view) {
         .confirm => &.{ .{ "y", "confirm" }, .{ "n/esc", "cancel" } },
+        .list => if (a.filtering)
+            &.{ .{ "type", "to filter" }, .{ "↵", "keep" }, .{ "esc", "clear" } }
+        else
+            listHints(a),
         .pager => if (a.isFollowing())
             &.{ .{ "↑↓ j/k", "scroll" }, .{ "G", "tail" }, .{ "f", "stop follow" }, .{ "esc", "back" } }
         else
             &.{ .{ "↑↓ j/k", "scroll" }, .{ "g/G", "top/end" }, .{ "f", "follow" }, .{ "esc", "back" } },
         .help => &.{ .{ "esc", "back" }, .{ "q", "quit" } },
-        .list => switch (a.tab) {
-            .containers, .stats => &.{
-                .{ "↑↓ j/k", "move" },
-                .{ "↵", "details" },
-                .{ "s", "start" },
-                .{ "S", "stop" },
-                .{ "K", "kill" },
-                .{ "d", "delete" },
-                .{ "l", "logs" },
-                .{ "e", "shell" },
-                .{ "P", "prune" },
-                .{ "?", "help" },
-                .{ "q", "quit" },
-            },
-            .stacks => &.{
-                .{ "↑↓ j/k", "move" },
-                .{ "↵", "members" },
-                .{ "s", "start all" },
-                .{ "S", "stop all" },
-                .{ "d", "delete all" },
-                .{ "?", "help" },
-                .{ "q", "quit" },
-            },
-            .images, .volumes, .networks => &.{
-                .{ "↑↓ j/k", "move" },
-                .{ "↵", "details" },
-                .{ "d", "delete" },
-                .{ "P", "prune" },
-                .{ "r", "refresh" },
-                .{ "?", "help" },
-                .{ "q", "quit" },
-            },
-        },
     };
 
     try w.writeAll(color.bg_bar);
@@ -577,6 +594,47 @@ fn renderKeyHints(a: *const App, width: usize, w: *Writer) !void {
     if (width > used + reserved) try w.splatByteAll(' ', width - used - reserved);
     if (width >= reserved) _ = try writeHint(w, exit_hint);
     try w.writeAll(esc.reset);
+}
+
+fn listHints(a: *const App) []const [2][]const u8 {
+    return switch (a.tab) {
+        .containers, .stats => &.{
+            .{ "↑↓ j/k", "move" },
+            .{ "↵", "details" },
+            .{ "/", "filter" },
+            .{ "o", "sort" },
+            .{ "s", "start" },
+            .{ "S", "stop" },
+            .{ "K", "kill" },
+            .{ "d", "delete" },
+            .{ "l", "logs" },
+            .{ "e", "shell" },
+            .{ "P", "prune" },
+            .{ "?", "help" },
+            .{ "q", "quit" },
+        },
+        .stacks => &.{
+            .{ "↑↓ j/k", "move" },
+            .{ "↵", "members" },
+            .{ "/", "filter" },
+            .{ "o", "sort" },
+            .{ "s", "start all" },
+            .{ "S", "stop all" },
+            .{ "d", "delete all" },
+            .{ "?", "help" },
+            .{ "q", "quit" },
+        },
+        .images, .volumes, .networks => &.{
+            .{ "↑↓ j/k", "move" },
+            .{ "↵", "details" },
+            .{ "/", "filter" },
+            .{ "o", "sort" },
+            .{ "d", "delete" },
+            .{ "P", "prune" },
+            .{ "?", "help" },
+            .{ "q", "quit" },
+        },
+    };
 }
 
 /// Columns one hint occupies: a leading space, the key, a space, the label
@@ -712,8 +770,13 @@ const help_text =
     \\  Log viewer
     \\    f  start / stop following            G  newest, re-attach to the tail
     \\
+    \\  Filtering and ordering
+    \\    /  filter the current tab; enter keeps it, esc clears it
+    \\    o  step the sort column, past the last back to the natural order
+    \\    O  reverse the sort direction
+    \\
     \\  General
-    \\    r  refresh now     ?  this help      q  quit         esc  leave view
+    \\    r  refresh now     ?  this help      q  quit         esc  clear filter
     \\
     \\  Destructive actions confirm on the status line: y proceeds, n cancels.
     \\  The list refreshes every three seconds.

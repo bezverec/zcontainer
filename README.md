@@ -193,6 +193,8 @@ vi-style keys; `q` quits from anywhere.
 | `ctrl-d` / `ctrl-u` | Half page down / up |
 | `1` … `6` | Select tab directly |
 | `tab` / `shift-tab` | Cycle tabs |
+| `/` | Filter the current tab; `enter` keeps it, `esc` clears it |
+| `o` / `O` | Step the sort column / reverse the direction |
 | `enter` | Details for the selected row (stack members, on Stacks) |
 | `l` | Show the last 1000 log lines |
 | `f` | In the log view: start or stop following |
@@ -214,6 +216,13 @@ ahead, `n` or `esc` to cancel. The prune prompt states how much space
 
 The list reloads by itself every three seconds while it is on screen. Detail,
 log and help views hold still so they can be read.
+
+Each tab keeps its own filter and its own sort order, so narrowing the
+container list does not empty the Images tab. A filter survives the automatic
+reload, and the status line says how many rows it is hiding. Sorting steps
+through the columns and then back to the natural order each list arrives in —
+running containers first, images by reference. Numeric columns sort as numbers,
+so memory orders 256 MB before 1 GB rather than alphabetically.
 
 Following a log runs `container logs --follow` as a child process, drained
 without blocking between key presses. Scrolling back detaches from the tail;

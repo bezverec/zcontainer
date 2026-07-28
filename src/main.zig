@@ -285,7 +285,27 @@ fn handlePagerKey(app: *App, key: term.Key, size: term.Size) void {
     }
 }
 
+/// While a filter is being typed, keystrokes are text rather than commands.
+/// Only the keys that edit or end the query are interpreted.
+fn handleFilterKey(app: *App, key: term.Key) void {
+    switch (key) {
+        .enter => app.endFilter(),
+        .escape => app.cancelFilter(),
+        .backspace => app.filterBackspace(),
+        .down, .up => app.endFilter(),
+        .ch => |c| switch (c) {
+            // Printable ASCII only; anything else would not survive the
+            // round trip through a fixed byte buffer anyway.
+            0x20...0x7e => app.filterAppend(c),
+            else => {},
+        },
+        else => {},
+    }
+}
+
 fn handleListKey(app: *App, screen: *Screen, key: term.Key, size: term.Size) void {
+    if (app.filtering) return handleFilterKey(app, key);
+
     const height = ui.bodyHeight(size);
     const half: isize = @intCast(@max(1, height / 2));
     const page: isize = @intCast(height);
@@ -302,7 +322,10 @@ fn handleListKey(app: *App, screen: *Screen, key: term.Key, size: term.Size) voi
         .left => app.nextTab(-1),
         .right => app.nextTab(1),
         .enter => app.showDetails(),
-        .escape, .backspace, .none => {},
+        // Escape drops an applied filter, which is the only way back to the
+        // full list once the prompt has been dismissed.
+        .escape => app.cancelFilter(),
+        .backspace, .none => {},
         .ch => |c| switch (c) {
             'q' => app.quit = true,
             'j' => app.moveCursor(1),
@@ -312,6 +335,9 @@ fn handleListKey(app: *App, screen: *Screen, key: term.Key, size: term.Size) voi
             ctrl_d => app.moveCursor(half),
             ctrl_u => app.moveCursor(-half),
             '1'...'6' => app.switchTab(@enumFromInt(c - '1')),
+            '/' => app.beginFilter(),
+            'o' => app.cycleSort(),
+            'O' => app.toggleSortDirection(),
             '?' => app.view = .help,
             'r' => {
                 screen.drawBusy(app, size, "refreshing…", .{});

@@ -59,14 +59,24 @@ Linux is compile-only in spirit — Apple's `container` runs nowhere else — bu
 it earned its place immediately: it caught that `std.c.ioctl` needs libc named
 explicitly, which macOS had been hiding by always linking it.
 
-## v0.1 — filling in the obvious gaps
+## Done: sort and filter (TUI)
 
-**Sort and filter.** Lists are fixed-order and unfiltered. With more than a
-handful of containers that stops scaling. `/` to filter, click or key to sort.
-Cheap, and it makes every other view better.
+`/` filters the current tab, `o` steps the sort column and `O` reverses it.
+
+Rows now reach the screen through a per-tab index list rather than being read
+straight out of the data, so the cursor always means the row the user is
+looking at — an action after filtering targets what is shown, which a test
+pins down. Filters are per tab: a single shared one emptied the Images tab
+because the container list had been narrowed, which is not what "filter the
+current tab" leads anyone to expect. Numeric columns sort as numbers, so
+memory does not put "1.0 GB" before "256 MB".
+
+## v0.1 — the rest
 
 **Bulk selection.** Space to mark rows, then act on the marks. The stack
 actions already prove the tally-reporting pattern.
+
+**Sort and filter in the browser.** The TUI has it; the web page does not.
 
 **Ports column and per-container detail in the browser.** The web page shows
 less than the TUI does; published ports and mounts are already in the payload

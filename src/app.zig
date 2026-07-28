@@ -190,6 +190,23 @@ pub const App = struct {
     exec_target_buf: [256]u8 = undefined,
     exec_target_len: usize = 0,
 
+    /// Row indices into the underlying list, after filtering and sorting.
+    /// Everything the UI shows and every action targets goes through here, so
+    /// a cursor position always means the same row the user is looking at.
+    visible: [Tab.count]std.ArrayList(usize) = @splat(.empty),
+    /// One query per tab. A single shared filter would empty the Images tab
+    /// because the user narrowed the container list, which is not what
+    /// "filter the current tab" leads anyone to expect.
+    filter_buf: [Tab.count][128]u8 = undefined,
+    filter_len: [Tab.count]usize = @splat(0),
+    /// True while keystrokes are being typed into the filter rather than
+    /// being read as commands.
+    filtering: bool = false,
+    /// Column to order by, or null to keep the natural order each list
+    /// arrives in (running containers first, images by reference).
+    sort_column: [Tab.count]?u8 = @splat(null),
+    sort_desc: [Tab.count]bool = @splat(false),
+
     pub fn init(gpa: Allocator, io: Io) App {
         return .{ .gpa = gpa, .io = io, .arena = .init(gpa) };
     }
@@ -199,6 +216,7 @@ pub const App = struct {
         self.cpu_samples.deinit(self.gpa);
         self.text.deinit(self.gpa);
         self.lines.deinit(self.gpa);
+        for (&self.visible) |*rows| rows.deinit(self.gpa);
         self.arena.deinit();
     }
 
@@ -247,11 +265,17 @@ pub const App = struct {
     // Data
     // -----------------------------------------------------------------------
 
+    /// Rows the user can actually see and act on, after filtering.
     pub fn itemCount(self: *const App) usize {
-        return self.countFor(self.tab);
+        return self.visible[@intFromEnum(self.tab)].items.len;
     }
 
     pub fn countFor(self: *const App, tab: Tab) usize {
+        return self.visible[@intFromEnum(tab)].items.len;
+    }
+
+    /// Total rows a tab holds before filtering, for the "3 of 12" hint.
+    pub fn totalFor(self: *const App, tab: Tab) usize {
         return switch (tab) {
             .containers => self.containers.len,
             .stacks => self.stacks.len,
@@ -259,6 +283,211 @@ pub const App = struct {
             .volumes => self.volumes.len,
             .networks => self.networks.len,
             .stats => self.stats.len,
+        };
+    }
+
+    /// Translates a screen row into an index in the underlying list.
+    pub fn sourceIndex(self: *const App, tab: Tab, row: usize) ?usize {
+        const rows = self.visible[@intFromEnum(tab)].items;
+        return if (row < rows.len) rows[row] else null;
+    }
+
+    fn selectedSource(self: *const App) ?usize {
+        return self.sourceIndex(self.tab, self.cursor[@intFromEnum(self.tab)]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Filtering and ordering
+    // -----------------------------------------------------------------------
+
+    pub fn filter(self: *const App) []const u8 {
+        return self.filterFor(self.tab);
+    }
+
+    pub fn filterFor(self: *const App, tab: Tab) []const u8 {
+        const i = @intFromEnum(tab);
+        return self.filter_buf[i][0..self.filter_len[i]];
+    }
+
+    pub fn beginFilter(self: *App) void {
+        self.filtering = true;
+    }
+
+    pub fn endFilter(self: *App) void {
+        self.filtering = false;
+    }
+
+    /// Leaves filter mode and drops this tab's query, restoring its full list.
+    pub fn cancelFilter(self: *App) void {
+        self.filtering = false;
+        self.filter_len[@intFromEnum(self.tab)] = 0;
+        self.rebuildVisible();
+    }
+
+    pub fn filterAppend(self: *App, byte: u8) void {
+        const i = @intFromEnum(self.tab);
+        if (self.filter_len[i] >= self.filter_buf[i].len) return;
+        self.filter_buf[i][self.filter_len[i]] = byte;
+        self.filter_len[i] += 1;
+        self.rebuildVisible();
+    }
+
+    pub fn filterBackspace(self: *App) void {
+        const i = @intFromEnum(self.tab);
+        if (self.filter_len[i] == 0) return;
+        self.filter_len[i] -= 1;
+        self.rebuildVisible();
+    }
+
+    /// Steps the sort column forward, wrapping back to the natural order the
+    /// list arrived in rather than sticking on the last column.
+    pub fn cycleSort(self: *App) void {
+        const i = @intFromEnum(self.tab);
+        const columns = sortColumnCount(self.tab);
+        self.sort_column[i] = if (self.sort_column[i]) |current|
+            (if (current + 1 >= columns) null else current + 1)
+        else
+            0;
+        self.rebuildVisible();
+    }
+
+    pub fn toggleSortDirection(self: *App) void {
+        const i = @intFromEnum(self.tab);
+        self.sort_desc[i] = !self.sort_desc[i];
+        self.rebuildVisible();
+    }
+
+    pub fn sortLabel(self: *const App, buf: []u8) []const u8 {
+        const i = @intFromEnum(self.tab);
+        const column = self.sort_column[i] orelse return "";
+        return std.fmt.bufPrint(buf, "sorted by {s} {s}", .{
+            sortColumnName(self.tab, column),
+            if (self.sort_desc[i]) "desc" else "asc",
+        }) catch "";
+    }
+
+    /// Rebuilds every tab's row list from the current data, filter and order.
+    /// Cheap enough to redo wholesale on each keystroke.
+    fn rebuildVisible(self: *App) void {
+        for (0..Tab.count) |i| {
+            const tab: Tab = @enumFromInt(i);
+            const needle = self.filterFor(tab);
+            const rows = &self.visible[i];
+            rows.clearRetainingCapacity();
+
+            for (0..self.totalFor(tab)) |index| {
+                if (needle.len > 0 and !self.matchesFilter(tab, index, needle)) continue;
+                rows.append(self.gpa, index) catch break;
+            }
+
+            if (self.sort_column[i]) |column| {
+                const ctx: SortContext = .{ .app = self, .tab = tab, .column = column, .desc = self.sort_desc[i] };
+                std.mem.sort(usize, rows.items, ctx, SortContext.lessThan);
+            }
+        }
+        self.clampCursor();
+    }
+
+    fn matchesFilter(self: *const App, tab: Tab, index: usize, needle: []const u8) bool {
+        var buf: [512]u8 = undefined;
+        const haystack = self.searchText(tab, index, &buf);
+        return containsIgnoreCase(haystack, needle);
+    }
+
+    /// The text a row is matched against: enough to find something by name,
+    /// image or state without matching on noise like timestamps.
+    fn searchText(self: *const App, tab: Tab, index: usize, buf: []u8) []const u8 {
+        return switch (tab) {
+            .containers => blk: {
+                const c = self.containers[index];
+                break :blk std.fmt.bufPrint(buf, "{s} {s} {s} {s}", .{ c.id, c.image, c.state, c.ip }) catch c.id;
+            },
+            .stacks => blk: {
+                const s = self.stacks[index];
+                break :blk std.fmt.bufPrint(buf, "{s}", .{s.name}) catch s.name;
+            },
+            .images => blk: {
+                const img = self.images[index];
+                break :blk std.fmt.bufPrint(buf, "{s} {s}", .{ img.reference, img.digest }) catch img.reference;
+            },
+            .volumes => blk: {
+                const v = self.volumes[index];
+                break :blk std.fmt.bufPrint(buf, "{s} {s} {s}", .{ v.name, v.driver, v.source }) catch v.name;
+            },
+            .networks => blk: {
+                const n = self.networks[index];
+                break :blk std.fmt.bufPrint(buf, "{s} {s} {s}", .{ n.name, n.mode, n.subnet }) catch n.name;
+            },
+            .stats => self.stats[index].id,
+        };
+    }
+
+    fn sortValue(self: *const App, tab: Tab, index: usize, column: u8) SortValue {
+        return switch (tab) {
+            .containers => blk: {
+                const c = self.containers[index];
+                break :blk switch (column) {
+                    0 => .{ .text = c.id },
+                    1 => .{ .text = c.state },
+                    2 => .{ .text = c.image },
+                    3 => .{ .text = c.ip },
+                    4 => .{ .number = c.cpus },
+                    else => .{ .number = c.memory_bytes },
+                };
+            },
+            .stacks => blk: {
+                const s = self.stacks[index];
+                break :blk switch (column) {
+                    0 => .{ .text = s.name },
+                    1 => .{ .number = s.running },
+                    2 => .{ .number = s.members.len },
+                    3 => .{ .number = s.cpus },
+                    else => .{ .number = s.memory_bytes },
+                };
+            },
+            .images => blk: {
+                const img = self.images[index];
+                break :blk switch (column) {
+                    0 => .{ .text = img.name },
+                    1 => .{ .text = img.tag },
+                    2 => .{ .text = img.reference },
+                    3 => .{ .text = img.digest },
+                    4 => .{ .text = img.arch },
+                    // ISO-8601 sorts correctly as text.
+                    else => .{ .text = img.created },
+                };
+            },
+            .volumes => blk: {
+                const v = self.volumes[index];
+                break :blk switch (column) {
+                    0 => .{ .text = v.name },
+                    1 => .{ .text = v.driver },
+                    2 => .{ .text = v.source },
+                    3 => .{ .text = v.format },
+                    else => .{ .number = v.size_bytes },
+                };
+            },
+            .networks => blk: {
+                const n = self.networks[index];
+                break :blk switch (column) {
+                    0 => .{ .text = n.name },
+                    1 => .{ .text = n.mode },
+                    2 => .{ .text = n.subnet },
+                    else => .{ .text = n.gateway },
+                };
+            },
+            .stats => blk: {
+                const s = self.stats[index];
+                break :blk switch (column) {
+                    0 => .{ .text = s.id },
+                    // Scaled so the fractional percentage survives as an integer.
+                    1 => .{ .number = @intFromFloat(self.cpuPercent(index) * 1000) },
+                    2 => .{ .number = s.memory_bytes },
+                    3 => .{ .number = s.net_rx + s.net_tx },
+                    4 => .{ .number = s.block_read + s.block_write },
+                    else => .{ .number = s.processes },
+                };
+            },
         };
     }
 
@@ -271,7 +500,7 @@ pub const App = struct {
     /// The container the cursor denotes, for the container-only keys. The
     /// Stacks tab has no single container, so it yields null.
     pub fn selectedContainer(self: *const App) ?cli.Container {
-        const i = self.cursor[@intFromEnum(self.tab)];
+        const i = self.selectedSource() orelse return null;
         return switch (self.tab) {
             .containers => if (i < self.containers.len) self.containers[i] else null,
             .stats => if (i < self.stats.len) self.findContainer(self.stats[i].id) else null,
@@ -319,7 +548,8 @@ pub const App = struct {
         } else if (self.status_is_error or self.status_transient) {
             self.clearStatus();
         }
-        self.clampCursor();
+        // Also clamps the cursor, so it runs instead of clampCursor here.
+        self.rebuildVisible();
     }
 
     fn clampCursor(self: *App) void {
@@ -506,8 +736,7 @@ pub const App = struct {
 
     /// Renders the selected row into the pager as a formatted detail sheet.
     pub fn showDetails(self: *App) void {
-        if (self.itemCount() == 0) return;
-        const i = self.cursor[@intFromEnum(self.tab)];
+        const i = self.selectedSource() orelse return;
 
         self.text.clearRetainingCapacity();
         var out: std.Io.Writer.Allocating = .fromArrayList(self.gpa, &self.text);
@@ -931,8 +1160,7 @@ pub const App = struct {
     }
 
     fn currentTarget(self: *const App) ?[]const u8 {
-        if (self.itemCount() == 0) return null;
-        const i = self.cursor[@intFromEnum(self.tab)];
+        const i = self.selectedSource() orelse return null;
         return switch (self.tab) {
             .containers => self.containers[i].id,
             .stacks => self.stacks[i].name,
@@ -943,6 +1171,109 @@ pub const App = struct {
         };
     }
 };
+
+/// A column's value for ordering. Numbers are kept as numbers so that a
+/// memory column does not sort "1.0 GB" before "512 MB".
+const SortValue = union(enum) {
+    text: []const u8,
+    number: u64,
+};
+
+const SortContext = struct {
+    app: *const App,
+    tab: Tab,
+    column: u8,
+    desc: bool,
+
+    fn lessThan(ctx: SortContext, a: usize, b: usize) bool {
+        const va = ctx.app.sortValue(ctx.tab, a, ctx.column);
+        const vb = ctx.app.sortValue(ctx.tab, b, ctx.column);
+        const ordered = switch (va) {
+            .text => |ta| std.ascii.lessThanIgnoreCase(ta, vb.text),
+            .number => |na| na < vb.number,
+        };
+        // Equal keys keep source order, so a sort never shuffles ties around
+        // between refreshes.
+        const equal = switch (va) {
+            .text => |ta| std.ascii.eqlIgnoreCase(ta, vb.text),
+            .number => |na| na == vb.number,
+        };
+        if (equal) return a < b;
+        return if (ctx.desc) !ordered else ordered;
+    }
+};
+
+fn sortColumnCount(tab: Tab) u8 {
+    return switch (tab) {
+        .containers => 6,
+        .stacks => 5,
+        .images => 6,
+        .volumes => 5,
+        .networks => 4,
+        .stats => 6,
+    };
+}
+
+/// Names match the column headers so the status line reads the way the table
+/// looks.
+fn sortColumnName(tab: Tab, column: u8) []const u8 {
+    return switch (tab) {
+        .containers => switch (column) {
+            0 => "name",
+            1 => "state",
+            2 => "image",
+            3 => "ip",
+            4 => "cpu",
+            else => "memory",
+        },
+        .stacks => switch (column) {
+            0 => "stack",
+            1 => "state",
+            2 => "containers",
+            3 => "cpu",
+            else => "memory",
+        },
+        .images => switch (column) {
+            0 => "name",
+            1 => "tag",
+            2 => "reference",
+            3 => "digest",
+            4 => "arch",
+            else => "created",
+        },
+        .volumes => switch (column) {
+            0 => "name",
+            1 => "driver",
+            2 => "source",
+            3 => "format",
+            else => "size",
+        },
+        .networks => switch (column) {
+            0 => "name",
+            1 => "mode",
+            2 => "subnet",
+            else => "gateway",
+        },
+        .stats => switch (column) {
+            0 => "name",
+            1 => "cpu",
+            2 => "memory",
+            3 => "net",
+            4 => "block",
+            else => "pids",
+        },
+    };
+}
+
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[i..][0..needle.len], needle)) return true;
+    }
+    return false;
+}
 
 fn needsConfirm(kind: ActionKind) bool {
     return switch (kind) {
@@ -1387,6 +1718,178 @@ test "a missing container binary is reported, not fatal" {
     try std.testing.expectEqual(@as(usize, 0), app.containers.len);
     try std.testing.expect(app.status_is_error);
     try std.testing.expect(std.mem.indexOf(u8, app.status(), "cannot run") != null);
+}
+
+test "filtering hides rows and keeps actions pointed at what is shown" {
+    const gpa = std.testing.allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+
+    var app: App = .init(gpa, h.io);
+    defer app.deinit();
+    app.refresh();
+    try std.testing.expectEqual(@as(usize, 3), app.itemCount());
+
+    // The fixture holds web-api, web-db and loner.
+    for ("db") |c| app.filterAppend(c);
+    try std.testing.expectEqual(@as(usize, 1), app.itemCount());
+    try std.testing.expectEqual(@as(usize, 3), app.totalFor(.containers));
+
+    // The cursor is at row 0, which is now web-db rather than web-api. An
+    // action must follow the visible row, not the underlying index.
+    app.cursor[@intFromEnum(Tab.containers)] = 0;
+    app.request(.container_delete);
+    try std.testing.expect(app.pending != null);
+    app.runPending();
+
+    const calls = try h.invocations(arena.allocator());
+    try std.testing.expect(Harness.contains(calls, "delete --force web-db"));
+    try std.testing.expect(!Harness.contains(calls, "delete --force web-api"));
+}
+
+test "filtering matches case-insensitively across name, image and state" {
+    const gpa = std.testing.allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var app: App = .init(gpa, h.io);
+    defer app.deinit();
+    app.refresh();
+
+    // By image, in the wrong case.
+    for ("POSTGRES") |c| app.filterAppend(c);
+    try std.testing.expectEqual(@as(usize, 1), app.itemCount());
+
+    app.cancelFilter();
+    try std.testing.expectEqual(@as(usize, 3), app.itemCount());
+
+    // By state.
+    for ("stopped") |c| app.filterAppend(c);
+    try std.testing.expectEqual(@as(usize, 2), app.itemCount());
+
+    // Backspacing widens the result again.
+    app.filterBackspace();
+    try std.testing.expectEqual(@as(usize, 2), app.itemCount());
+
+    // Nothing matches: an empty list, not an error.
+    app.cancelFilter();
+    for ("zzzz") |c| app.filterAppend(c);
+    try std.testing.expectEqual(@as(usize, 0), app.itemCount());
+    try std.testing.expectEqual(@as(?[]const u8, null), app.currentTarget());
+}
+
+test "sorting orders by the chosen column and reverses" {
+    const gpa = std.testing.allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var app: App = .init(gpa, h.io);
+    defer app.deinit();
+    app.refresh();
+
+    const nameAt = struct {
+        fn get(a: *const App, row: usize) []const u8 {
+            return a.containers[a.sourceIndex(.containers, row).?].id;
+        }
+    }.get;
+
+    // Natural order: running first, then alphabetical.
+    try std.testing.expectEqualStrings("web-api", nameAt(&app, 0));
+
+    // Column 0 is the name, so ascending is strictly alphabetical.
+    app.cycleSort();
+    try std.testing.expectEqualStrings("loner", nameAt(&app, 0));
+    try std.testing.expectEqualStrings("web-db", nameAt(&app, 2));
+
+    app.toggleSortDirection();
+    try std.testing.expectEqualStrings("web-db", nameAt(&app, 0));
+    try std.testing.expectEqualStrings("loner", nameAt(&app, 2));
+}
+
+test "memory sorts numerically, not as rendered text" {
+    const gpa = std.testing.allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var app: App = .init(gpa, h.io);
+    defer app.deinit();
+    app.refresh();
+
+    // Column 5 is memory: 256 MB, 1 GB and 2 GB in the fixture. Sorted as
+    // text, "1.0 GB" would come before "256 MB".
+    app.sort_column[@intFromEnum(Tab.containers)] = 5;
+    app.sort_desc[@intFromEnum(Tab.containers)] = false;
+    app.rebuildVisible();
+
+    var previous: u64 = 0;
+    for (0..app.itemCount()) |row| {
+        const bytes = app.containers[app.sourceIndex(.containers, row).?].memory_bytes;
+        try std.testing.expect(bytes >= previous);
+        previous = bytes;
+    }
+    try std.testing.expectEqual(@as(u64, 268435456), app.containers[app.sourceIndex(.containers, 0).?].memory_bytes);
+}
+
+test "the sort column wraps back to the natural order" {
+    const gpa = std.testing.allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var app: App = .init(gpa, h.io);
+    defer app.deinit();
+    app.refresh();
+
+    const tab = @intFromEnum(Tab.containers);
+    try std.testing.expectEqual(@as(?u8, null), app.sort_column[tab]);
+    for (0..sortColumnCount(.containers)) |i| {
+        app.cycleSort();
+        try std.testing.expectEqual(@as(?u8, @intCast(i)), app.sort_column[tab]);
+    }
+    app.cycleSort();
+    try std.testing.expectEqual(@as(?u8, null), app.sort_column[tab]);
+}
+
+test "each tab keeps its own filter" {
+    const gpa = std.testing.allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var app: App = .init(gpa, h.io);
+    defer app.deinit();
+    app.refresh();
+
+    for ("pf") |c| app.filterAppend(c);
+    try std.testing.expectEqual(@as(usize, 0), app.itemCount());
+
+    // Narrowing the container list must not empty an unrelated tab.
+    app.switchTab(.images);
+    try std.testing.expectEqualStrings("", app.filter());
+    try std.testing.expectEqual(app.totalFor(.images), app.itemCount());
+
+    // And the container query is still there on the way back.
+    app.switchTab(.containers);
+    try std.testing.expectEqualStrings("pf", app.filter());
+}
+
+test "a filter survives a refresh" {
+    const gpa = std.testing.allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var app: App = .init(gpa, h.io);
+    defer app.deinit();
+    app.refresh();
+
+    for ("loner") |c| app.filterAppend(c);
+    try std.testing.expectEqual(@as(usize, 1), app.itemCount());
+
+    // The list reloads every few seconds; that must not silently widen it.
+    app.refresh();
+    try std.testing.expectEqual(@as(usize, 1), app.itemCount());
+    try std.testing.expectEqualStrings("loner", app.filter());
 }
 
 test stackNameFor {
