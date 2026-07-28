@@ -43,4 +43,14 @@ jobs:
       - name: Working tree is left clean
         # The fake's invocation log goes to a temporary directory, so nothing
         # the tests write should ever reach the repository.
-        run: git status --porcelain --untracked-files=all | tee /dev/stderr | wc -l | grep -qx 0
+        #
+        # Compared as a string rather than piped through `wc -l`: BSD wc pads
+        # its count with spaces, so the obvious `wc -l | grep -qx 0` passes on
+        # Linux and fails on macOS for a perfectly clean tree.
+        run: |
+          dirty="$(git status --porcelain --untracked-files=all)"
+          if [ -n "$dirty" ]; then
+            echo "the run left the working tree dirty:"
+            echo "$dirty"
+            exit 1
+          fi
