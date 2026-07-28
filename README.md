@@ -112,9 +112,14 @@ It prints a URL carrying a token; open that. `--port` picks a different port,
 `0` picks a free one.
 
 The page lists the same six views, refreshes every three seconds, and offers
-start, stop, kill, delete, prune and a log viewer. Container environment
-variables are deliberately **not** served — they routinely carry credentials,
-and a browser is a leakier place for them than a terminal.
+start, stop, kill, delete, prune and a log viewer. It filters and sorts like
+the TUI: type in the box to narrow the current tab, click a column header to
+sort by it, click again to reverse and a third time to return to the server's
+order.
+
+Container environment variables are deliberately **not** served — they
+routinely carry credentials, and a browser is a leakier place for them than a
+terminal.
 
 ### Why the token
 
@@ -193,6 +198,7 @@ vi-style keys; `q` quits from anywhere.
 | `ctrl-d` / `ctrl-u` | Half page down / up |
 | `1` … `6` | Select tab directly |
 | `tab` / `shift-tab` | Cycle tabs |
+| `space` | Mark the row; actions then apply to every mark |
 | `/` | Filter the current tab; `enter` keeps it, `esc` clears it |
 | `o` / `O` | Step the sort column / reverse the direction |
 | `enter` | Details for the selected row (stack members, on Stacks) |
@@ -216,6 +222,11 @@ ahead, `n` or `esc` to cancel. The prune prompt states how much space
 
 The list reloads by itself every three seconds while it is on screen. Detail,
 log and help views hold still so they can be read.
+
+Marking rows with `space` retargets every action key at the marks instead of
+the cursor, and a bulk action always confirms — even `start`, which is
+unconfirmed for a single row. Marks are held by name, so sorting or reloading
+cannot slide them onto a different container. `esc` clears them.
 
 Each tab keeps its own filter and its own sort order, so narrowing the
 container list does not empty the Images tab. A filter survives the automatic

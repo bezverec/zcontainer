@@ -6,8 +6,9 @@
 //! testing catches a `delete` that forgets `--force`, or an action wired to
 //! the wrong subcommand.
 //!
-//! Every invocation appends its argv to `zc-fake-<parent pid>.log` in the
-//! working directory, one line per call.
+//! Every invocation appends its argv to `/tmp/zc-fake-<parent pid>.log`, one
+//! line per call. It goes to a temporary directory rather than the working
+//! one so that a leaked file can never dirty the repository or trip CI.
 //!
 //! The name is derived from the parent's pid rather than passed in, because a
 //! test's `Io` is created with an empty environment and would never get a
@@ -30,7 +31,7 @@ const df = @embedFile("df.json");
 
 /// Kept in step with `Harness.logName` in src/app.zig.
 fn logName(buf: []u8) ![]const u8 {
-    return std.fmt.bufPrint(buf, "zc-fake-{d}.log", .{std.c.getppid()});
+    return std.fmt.bufPrint(buf, "/tmp/zc-fake-{d}.log", .{std.c.getppid()});
 }
 
 pub fn main(init: std.process.Init) !void {

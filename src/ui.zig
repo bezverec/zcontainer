@@ -55,7 +55,9 @@ fn renderList(a: *const App, size: term.Size, w: *Writer) !void {
     try renderHeader(a, width, w);
     try renderTabs(a, width, w);
 
-    const cols = columnsFor(a.tab, width);
+    // Every row carries a fixed-width marker gutter, present whether or not
+    // anything is marked, so the table never shifts sideways under the eye.
+    const cols = columnsFor(a.tab, width -| mark_width);
     try renderColumnHeader(cols, width, w);
 
     const start = a.scroll[@intFromEnum(a.tab)];
@@ -79,6 +81,14 @@ fn renderList(a: *const App, size: term.Size, w: *Writer) !void {
         const is_selected = screen_row == selected;
         if (is_selected) try w.writeAll(color.bg_sel ++ esc.bold);
 
+        if (a.isMarked(a.tab, i)) {
+            if (!is_selected) try w.writeAll(color.accent);
+            _ = try writeCounted(w, "▸ ", mark_width);
+            if (!is_selected) try w.writeAll(esc.reset);
+        } else {
+            _ = try writeCounted(w, "  ", mark_width);
+        }
+
         switch (a.tab) {
             .containers => try renderContainerRow(a.containers[i], cols, now, is_selected, w),
             .stacks => try renderStackRow(a.stacks[i], cols, is_selected, w),
@@ -90,7 +100,7 @@ fn renderList(a: *const App, size: term.Size, w: *Writer) !void {
 
         if (is_selected) {
             // Extend the highlight to the right edge.
-            const used = cols.total();
+            const used = mark_width + cols.total();
             if (width > used) try w.splatByteAll(' ', width - used);
             try w.writeAll(esc.reset);
         } else {
@@ -206,6 +216,9 @@ const Columns = struct {
 
 const gap = 2;
 
+/// Columns reserved at the left of every row for the mark indicator.
+const mark_width = 2;
+
 /// All four layouts place their flexible column third, after two identifying
 /// columns that are always worth keeping.
 const flex_column = 2;
@@ -292,7 +305,8 @@ fn fixedWidth(c: Columns, flex: usize) usize {
 
 fn renderColumnHeader(cols: Columns, width: usize, w: *Writer) !void {
     try w.writeAll("\r\n" ++ color.fg_dim ++ esc.bold);
-    var used: usize = 0;
+    // Indented past the marker gutter so headers line up with their cells.
+    var used: usize = try writeCounted(w, "  ", mark_width);
     for (0..cols.len) |i| {
         used += try cell(w, cols.labels[i], cols.widths[i]);
         if (i + 1 < cols.len) used += try writeCounted(w, "  ", gap);
@@ -523,6 +537,15 @@ fn renderStatusLine(a: *const App, width: usize, w: *Writer) !void {
 /// Describes the active filter and ordering, so a list that is hiding rows
 /// never looks like the whole truth.
 fn listHint(a: *const App, buf: []u8) []const u8 {
+    // Marks change what every action key does, so they outrank the rest.
+    const marks = a.markedCount(a.tab);
+    if (marks > 0) {
+        return std.fmt.bufPrint(buf, "{d} marked — actions apply to {s}, esc clears", .{
+            marks,
+            if (marks == 1) "it" else "them",
+        }) catch "";
+    }
+
     var sort_buf: [64]u8 = undefined;
     const sort = a.sortLabel(&sort_buf);
     const query = a.filter();
@@ -600,6 +623,7 @@ fn listHints(a: *const App) []const [2][]const u8 {
     return switch (a.tab) {
         .containers, .stats => &.{
             .{ "↑↓ j/k", "move" },
+            .{ "space", "mark" },
             .{ "↵", "details" },
             .{ "/", "filter" },
             .{ "o", "sort" },
@@ -615,6 +639,7 @@ fn listHints(a: *const App) []const [2][]const u8 {
         },
         .stacks => &.{
             .{ "↑↓ j/k", "move" },
+            .{ "space", "mark" },
             .{ "↵", "members" },
             .{ "/", "filter" },
             .{ "o", "sort" },
@@ -626,6 +651,7 @@ fn listHints(a: *const App) []const [2][]const u8 {
         },
         .images, .volumes, .networks => &.{
             .{ "↑↓ j/k", "move" },
+            .{ "space", "mark" },
             .{ "↵", "details" },
             .{ "/", "filter" },
             .{ "o", "sort" },
@@ -769,6 +795,11 @@ const help_text =
     \\
     \\  Log viewer
     \\    f  start / stop following            G  newest, re-attach to the tail
+    \\
+    \\  Marking rows for a bulk action
+    \\    space           mark the row and step down; actions then apply to
+    \\                    every mark instead of the cursor, and always confirm
+    \\    esc             clear the marks
     \\
     \\  Filtering and ordering
     \\    /  filter the current tab; enter keeps it, esc clears it

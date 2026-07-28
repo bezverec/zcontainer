@@ -322,9 +322,12 @@ fn handleListKey(app: *App, screen: *Screen, key: term.Key, size: term.Size) voi
         .left => app.nextTab(-1),
         .right => app.nextTab(1),
         .enter => app.showDetails(),
-        // Escape drops an applied filter, which is the only way back to the
-        // full list once the prompt has been dismissed.
-        .escape => app.cancelFilter(),
+        // Escape backs out of whatever is narrowing the view: marks first,
+        // since they are the more surprising thing to leave behind.
+        .escape => if (app.markedCount(app.tab) > 0)
+            app.clearMarks(app.tab)
+        else
+            app.cancelFilter(),
         .backspace, .none => {},
         .ch => |c| switch (c) {
             'q' => app.quit = true,
@@ -335,6 +338,7 @@ fn handleListKey(app: *App, screen: *Screen, key: term.Key, size: term.Size) voi
             ctrl_d => app.moveCursor(half),
             ctrl_u => app.moveCursor(-half),
             '1'...'6' => app.switchTab(@enumFromInt(c - '1')),
+            ' ' => app.toggleMark(),
             '/' => app.beginFilter(),
             'o' => app.cycleSort(),
             'O' => app.toggleSortDirection(),

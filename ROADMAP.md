@@ -53,7 +53,8 @@ environment.
 ## Done: CI
 
 `.github/workflows/ci.yml` builds and tests on macOS and Linux, checks
-formatting, and fails if the tests leave a stray file behind.
+formatting, and fails if a run leaves the working tree dirty. The fake's
+invocation log writes to a temporary directory precisely so it never can.
 
 Linux is compile-only in spirit — Apple's `container` runs nowhere else — but
 it earned its place immediately: it caught that `std.c.ioctl` needs libc named
@@ -71,12 +72,21 @@ because the container list had been narrowed, which is not what "filter the
 current tab" leads anyone to expect. Numeric columns sort as numbers, so
 memory does not put "1.0 GB" before "256 MB".
 
+## Done: bulk selection, and the browser caught up
+
+`space` marks a row and steps down; every action key then applies to the marks
+and always confirms, `start` included, because a bulk operation deserves a
+second look whichever one it is. Marks are held by name rather than index —
+an index means a different container the moment the list reorders or something
+is created, and marks outlive refreshes.
+
+The browser front end now filters and sorts too, per tab, with the same
+numeric-aware ordering. The filter box keeps focus and caret across the
+three-second reload, which is only possible because the page updates in place.
+
+**60 tests.**
+
 ## v0.1 — the rest
-
-**Bulk selection.** Space to mark rows, then act on the marks. The stack
-actions already prove the tally-reporting pattern.
-
-**Sort and filter in the browser.** The TUI has it; the web page does not.
 
 **Ports column and per-container detail in the browser.** The web page shows
 less than the TUI does; published ports and mounts are already in the payload

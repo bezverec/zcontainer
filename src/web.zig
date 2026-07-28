@@ -461,7 +461,7 @@ fn testRequest(gpa: Allocator, raw: []const u8) ![]u8 {
     // so clear it rather than leaving a file in the working directory.
     defer {
         var name_buf: [64]u8 = undefined;
-        const log = std.fmt.bufPrint(&name_buf, "zc-fake-{d}.log", .{std.c.getpid()}) catch "";
+        const log = std.fmt.bufPrint(&name_buf, "/tmp/zc-fake-{d}.log", .{std.c.getpid()}) catch "";
         if (log.len > 0) Io.Dir.cwd().deleteFile(threaded.io(), log) catch {};
     }
 

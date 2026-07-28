@@ -56,7 +56,19 @@
     text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 380px;
   }
-  th { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--dim); font-weight: 600; }
+  th {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .5px;
+    color: var(--dim); font-weight: 600; user-select: none;
+  }
+  th[data-sort] { cursor: pointer; }
+  th[data-sort]:hover { color: var(--text); }
+  th .arrow { color: var(--accent); margin-left: 4px; }
+  #q {
+    font: inherit; font-size: 13px; padding: 4px 10px; width: 190px;
+    border: 1px solid var(--line); border-radius: 7px;
+    background: var(--bg); color: var(--text);
+  }
+  #q:focus { outline: none; border-color: var(--accent); }
   tbody tr:last-child td { border-bottom: none; }
   tbody tr:hover { background: var(--sel); }
   td.num { font-variant-numeric: tabular-nums; }
@@ -100,6 +112,7 @@
 <header>
   <div class="brand">zcontainer<span id="version"></span></div>
   <div class="spacer"></div>
+  <input id="q" type="search" placeholder="Filter…" autocomplete="off" spellcheck="false">
   <div class="pill" id="running">–</div>
   <div class="pill" id="system">–</div>
   <button class="act" id="refresh">Refresh</button>
@@ -179,10 +192,83 @@ function stacks() {
   })).sort((a, b) => (b.running > 0) - (a.running > 0) || a.name.localeCompare(b.name));
 }
 
+// Per-tab filter text and sort order, mirroring the TUI: narrowing the
+// container list must not empty the Images tab.
+const filters = {};
+const sorts = {};
+
+// What each tab is searched on, and what each column sorts by. The sort keys
+// are values rather than rendered text, so memory orders 256 MB before 1 GB.
+const TAB_MODEL = {
+  containers: {
+    search: (c) => `${c.id} ${c.image} ${c.state} ${c.ip}`,
+    keys: [(c) => c.id, (c) => c.state, (c) => c.image, (c) => c.ip,
+           (c) => c.cpus, (c) => c.memory_bytes],
+  },
+  stacks: {
+    search: (s) => s.name,
+    keys: [(s) => s.name, (s) => s.running, (s) => s.members.length,
+           (s) => s.cpus, (s) => s.memory],
+  },
+  images: {
+    search: (i) => `${i.reference} ${i.digest}`,
+    keys: [(i) => i.name, (i) => i.tag, (i) => i.reference, (i) => i.digest,
+           (i) => i.arch, (i) => i.created],
+  },
+  volumes: {
+    search: (v) => `${v.name} ${v.driver} ${v.source}`,
+    keys: [(v) => v.name, (v) => v.driver, (v) => v.source, (v) => v.format,
+           (v) => v.size_bytes],
+  },
+  networks: {
+    search: (n) => `${n.name} ${n.mode} ${n.subnet}`,
+    keys: [(n) => n.name, (n) => n.mode, (n) => n.subnet, (n) => n.gateway],
+  },
+  stats: {
+    search: (s) => s.id,
+    keys: [(s) => s.id, (s) => s.memory_bytes, (s) => s.net_rx + s.net_tx,
+           (s) => s.block_read + s.block_write, (s) => s.processes],
+  },
+};
+
+function allRows(tab) {
+  if (!state) return [];
+  return tab === "stacks" ? stacks() : (state[tab] || []);
+}
+
+/// Rows after this tab's filter and sort, which is what gets rendered and
+/// what the counts describe.
+function rowsFor(tab) {
+  const model = TAB_MODEL[tab];
+  let list = allRows(tab);
+
+  const q = (filters[tab] || "").trim().toLowerCase();
+  if (q) list = list.filter((r) => model.search(r).toLowerCase().includes(q));
+
+  const order = sorts[tab];
+  if (order) {
+    const key = model.keys[order.col];
+    list = [...list].sort((a, b) => {
+      const va = key(a), vb = key(b);
+      const c = typeof va === "number" && typeof vb === "number"
+        ? va - vb
+        : String(va).localeCompare(String(vb));
+      return order.desc ? -c : c;
+    });
+  }
+  return list;
+}
+
 function count(name) {
-  if (!state) return 0;
-  if (name === "stacks") return stacks().length;
-  return (state[name] || []).length;
+  return rowsFor(name).length;
+}
+
+/// Says how many rows a filter is hiding, so a narrowed list never reads as
+/// the whole truth.
+function filterNote(tab) {
+  const q = (filters[tab] || "").trim();
+  if (!q) return "";
+  return `<span>· filter "${q}" — ${rowsFor(tab).length} of ${allRows(tab).length}</span>`;
 }
 
 // Tab buttons are built once and then only updated in place. Replacing them
@@ -194,7 +280,7 @@ function renderTabs() {
       const b = document.createElement("button");
       b.dataset.tab = name;
       b.innerHTML = `${name[0].toUpperCase() + name.slice(1)}<span class="count"></span>`;
-      b.onclick = () => { tab = name; render(); };
+      b.onclick = () => { tab = name; syncFilterBox(); render(); };
       host.append(b);
     }
   }
@@ -204,9 +290,21 @@ function renderTabs() {
   }
 }
 
+/// Headers are clickable to sort. The trailing actions header carries no key
+/// and stays inert.
 function table(head, rows) {
-  if (!rows.length) return `<div class="empty">nothing here</div>`;
-  return `<table><thead><tr>${head.map((h) => `<th>${h}</th>`).join("")}</tr></thead>
+  if (!rows.length) {
+    const q = (filters[tab] || "").trim();
+    return `<div class="empty">${q ? "no rows match the filter" : "nothing here"}</div>`;
+  }
+  const order = sorts[tab];
+  const keys = TAB_MODEL[tab].keys.length;
+  const cells = head.map((h, i) => {
+    if (!h || i >= keys) return `<th></th>`;
+    const arrow = order && order.col === i ? `<span class="arrow">${order.desc ? "↓" : "↑"}</span>` : "";
+    return `<th data-sort="${i}">${h}${arrow}</th>`;
+  });
+  return `<table><thead><tr>${cells.join("")}</tr></thead>
     <tbody>${rows.join("")}</tbody></table>`;
 }
 
@@ -232,7 +330,7 @@ function renderView() {
   if (tab === "containers") {
     put(v, table(
       ["Name", "State", "Image", "IP", "CPU", "Memory", ""],
-      state.containers.map((c) => `<tr>
+      rowsFor("containers").map((c) => `<tr>
         <td class="mono">${c.id}</td>
         <td class="state ${stateClass(c.state)}">${c.state}</td>
         <td class="mono" title="${c.image}">${c.image}</td>
@@ -248,13 +346,13 @@ function renderView() {
         </div></td></tr>`),
     ));
     const running = state.containers.filter((c) => c.state === "running").length;
-    barHtml = `<span>${running} running of ${state.containers.length}</span>`
+    barHtml = `<span>${running} running of ${state.containers.length}</span>` + filterNote("containers")
       + `<span class="spacer"></span>`
       + act("Prune stopped", "prune-containers", "", true);
   } else if (tab === "stacks") {
     put(v, table(
       ["Stack", "State", "Containers", "CPU", "Memory", ""],
-      stacks().map((s) => `<tr>
+      rowsFor("stacks").map((s) => `<tr>
         <td class="mono">${s.name}</td>
         <td class="state ${s.running === 0 ? "stopped" : s.running === s.members.length ? "running" : "other"}">
           ${s.running === 0 ? "stopped" : s.running === s.members.length ? "running" : "partial"}</td>
@@ -269,19 +367,19 @@ function renderView() {
   } else if (tab === "images") {
     put(v, table(
       ["Name", "Tag", "Reference", "Digest", "Arch", "Created", ""],
-      state.images.map((i) => `<tr>
+      rowsFor("images").map((i) => `<tr>
         <td class="mono">${i.name}</td><td>${i.tag}</td>
         <td class="mono" title="${i.reference}">${i.reference}</td>
         <td class="mono">${i.digest}</td><td>${i.arch}</td><td>${age(i.created)}</td>
         <td><div class="actions">${act("Delete", "delete-image", i.reference, true)}</div></td></tr>`),
     ));
-    barHtml = `<span>images ${bytes(state.disk.images.size_bytes)}, ${bytes(state.disk.images.reclaimable)} reclaimable</span>`
+    barHtml = `<span>images ${bytes(state.disk.images.size_bytes)}, ${bytes(state.disk.images.reclaimable)} reclaimable</span>` + filterNote("images")
       + `<span class="spacer"></span>`
       + act("Prune unused", "prune-images", "", true);
   } else if (tab === "volumes") {
     put(v, table(
       ["Name", "Driver", "Source", "Format", "Size", ""],
-      state.volumes.map((x) => `<tr>
+      rowsFor("volumes").map((x) => `<tr>
         <td class="mono">${x.name}</td><td>${x.driver}</td>
         <td class="mono" title="${x.source}">${x.source}</td>
         <td>${x.format}</td><td class="num">${bytes(x.size_bytes)}</td>
@@ -290,7 +388,7 @@ function renderView() {
   } else if (tab === "networks") {
     put(v, table(
       ["Name", "Mode", "Subnet", "Gateway", ""],
-      state.networks.map((n) => `<tr>
+      rowsFor("networks").map((n) => `<tr>
         <td class="mono">${n.name}</td><td>${n.mode}</td>
         <td class="mono num">${n.subnet}</td><td class="mono num">${n.gateway}</td>
         <td><div class="actions">${act("Delete", "delete-network", n.name, true)}</div></td></tr>`),
@@ -298,7 +396,7 @@ function renderView() {
   } else if (tab === "stats") {
     put(v, table(
       ["Name", "Memory", "Net Rx/Tx", "Block R/W", "PIDs"],
-      state.stats.map((s) => `<tr>
+      rowsFor("stats").map((s) => `<tr>
         <td class="mono">${s.id}</td>
         <td class="num">${bytes(s.memory_bytes)} / ${bytes(s.memory_limit)}</td>
         <td class="num">${bytes(s.net_rx)} / ${bytes(s.net_tx)}</td>
@@ -397,7 +495,33 @@ document.addEventListener("click", async (ev) => {
   }
 });
 
+// The box shows the current tab's own query, so switching tabs does not carry
+// a filter across.
+function syncFilterBox() {
+  $("q").value = filters[tab] || "";
+}
+
+$("q").addEventListener("input", (ev) => {
+  filters[tab] = ev.target.value;
+  render();
+});
+
+// Clicking a header sorts by it; clicking the active one reverses, and a
+// third click returns to the order the server sent.
+document.addEventListener("click", (ev) => {
+  const th = ev.target.closest("th[data-sort]");
+  if (!th) return;
+  const col = Number(th.dataset.sort);
+  const current = sorts[tab];
+  if (!current || current.col !== col) sorts[tab] = { col, desc: false };
+  else if (!current.desc) sorts[tab] = { col, desc: true };
+  else delete sorts[tab];
+  render();
+});
+
 $("refresh").onclick = refresh;
 refresh();
+// The filter box must keep focus and the caret while the list reloads, which
+// is why the page updates in place rather than rebuilding.
 setInterval(() => { if (!busy && !$("modal").open) refresh(); }, 3000);
 </script>

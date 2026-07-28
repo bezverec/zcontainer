@@ -40,12 +40,7 @@ jobs:
           ./zig-out/bin/zcontainer --version
           ./zig-out/bin/zcontainer-web --version
 
-      - name: Working directory is left clean
-        # The fake writes an invocation log; every test must clear its own.
-        run: |
-          if ls zc-fake-*.log >/dev/null 2>&1; then
-            echo "tests left a fake-container log behind:"
-            ls -l zc-fake-*.log
-            exit 1
-          fi
-          git diff --exit-code
+      - name: Working tree is left clean
+        # The fake's invocation log goes to a temporary directory, so nothing
+        # the tests write should ever reach the repository.
+        run: git status --porcelain --untracked-files=all | tee /dev/stderr | wc -l | grep -qx 0

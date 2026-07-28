@@ -2,4 +2,3 @@
 zig-out/
 .DS_Store
 imgui.ini
-zc-fake-*.log

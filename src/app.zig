@@ -97,8 +97,13 @@ pub const ActionKind = enum {
     }
 };
 
+/// What a queued action applies to. Stacks and marks both fan out to several
+/// containers, but from different sources.
+const Scope = enum { single, stack, marked };
+
 const Pending = struct {
     kind: ActionKind,
+    scope: Scope = .single,
     target_buf: [256]u8,
     target_len: usize,
     prompt_buf: [256]u8,
@@ -207,6 +212,11 @@ pub const App = struct {
     sort_column: [Tab.count]?u8 = @splat(null),
     sort_desc: [Tab.count]bool = @splat(false),
 
+    /// Rows marked for a bulk action, held by name rather than index. An
+    /// index would come to mean a different container as soon as the list
+    /// reordered or something was created, and these outlive refreshes.
+    marked: [Tab.count]std.ArrayList([]u8) = @splat(.empty),
+
     pub fn init(gpa: Allocator, io: Io) App {
         return .{ .gpa = gpa, .io = io, .arena = .init(gpa) };
     }
@@ -217,6 +227,10 @@ pub const App = struct {
         self.text.deinit(self.gpa);
         self.lines.deinit(self.gpa);
         for (&self.visible) |*rows| rows.deinit(self.gpa);
+        for (0..Tab.count) |i| {
+            for (self.marked[i].items) |name| self.gpa.free(name);
+            self.marked[i].deinit(self.gpa);
+        }
         self.arena.deinit();
     }
 
@@ -420,6 +434,64 @@ pub const App = struct {
             },
             .stats => self.stats[index].id,
         };
+    }
+
+    // -----------------------------------------------------------------------
+    // Marking rows for a bulk action
+    // -----------------------------------------------------------------------
+
+    /// Identity of a row, and also the argument an action would pass to
+    /// `container`. Marks are stored as these.
+    fn rowName(self: *const App, tab: Tab, index: usize) ?[]const u8 {
+        return switch (tab) {
+            .containers => if (index < self.containers.len) self.containers[index].id else null,
+            .stacks => if (index < self.stacks.len) self.stacks[index].name else null,
+            .images => if (index < self.images.len) self.images[index].reference else null,
+            .volumes => if (index < self.volumes.len) self.volumes[index].name else null,
+            .networks => if (index < self.networks.len) self.networks[index].name else null,
+            .stats => if (index < self.stats.len) self.stats[index].id else null,
+        };
+    }
+
+    pub fn isMarked(self: *const App, tab: Tab, index: usize) bool {
+        const name = self.rowName(tab, index) orelse return false;
+        for (self.marked[@intFromEnum(tab)].items) |marked| {
+            if (std.mem.eql(u8, marked, name)) return true;
+        }
+        return false;
+    }
+
+    pub fn markedCount(self: *const App, tab: Tab) usize {
+        return self.marked[@intFromEnum(tab)].items.len;
+    }
+
+    /// Marks or unmarks the row under the cursor and steps down, so a run of
+    /// rows can be marked by holding space.
+    pub fn toggleMark(self: *App) void {
+        const index = self.selectedSource() orelse return;
+        const name = self.rowName(self.tab, index) orelse return;
+        const list = &self.marked[@intFromEnum(self.tab)];
+
+        for (list.items, 0..) |marked, i| {
+            if (!std.mem.eql(u8, marked, name)) continue;
+            self.gpa.free(marked);
+            _ = list.orderedRemove(i);
+            self.moveCursor(1);
+            return;
+        }
+
+        const copy = self.gpa.dupe(u8, name) catch return;
+        list.append(self.gpa, copy) catch {
+            self.gpa.free(copy);
+            return;
+        };
+        self.moveCursor(1);
+    }
+
+    pub fn clearMarks(self: *App, tab: Tab) void {
+        const list = &self.marked[@intFromEnum(tab)];
+        for (list.items) |name| self.gpa.free(name);
+        list.clearRetainingCapacity();
     }
 
     fn sortValue(self: *const App, tab: Tab, index: usize, column: u8) SortValue {
@@ -969,12 +1041,41 @@ pub const App = struct {
 
     /// Queues an action. Destructive kinds open a confirm prompt first;
     /// everything else runs immediately.
+    /// Marked rows take precedence over the cursor: once rows are marked, the
+    /// action keys mean "do this to the marks", which is the whole point of
+    /// having marked them.
     pub fn request(self: *App, kind: ActionKind) void {
+        if (self.markedCount(self.tab) > 0) return self.queueMarked(kind);
+
         const target = self.currentTarget() orelse {
             self.setStatus(true, "nothing selected", .{});
             return;
         };
         self.queue(kind, target);
+    }
+
+    fn queueMarked(self: *App, kind: ActionKind) void {
+        const count = self.markedCount(self.tab);
+        var p: Pending = .{
+            .kind = kind,
+            .scope = .marked,
+            .target_buf = undefined,
+            .target_len = 0,
+            .prompt_buf = undefined,
+            .prompt_len = 0,
+        };
+
+        const prompt = std.fmt.bufPrint(&p.prompt_buf, "{s} {d} marked {s}?", .{
+            verb(kind),
+            count,
+            if (count == 1) "row" else "rows",
+        }) catch "confirm?";
+        p.prompt_len = prompt.len;
+        self.pending = p;
+
+        // Even start is confirmed here: a bulk action is worth a second look
+        // regardless of which one it is.
+        self.view = .confirm;
     }
 
     /// Kill has no stack-wide form, so it needs a single selected container
@@ -1062,7 +1163,9 @@ pub const App = struct {
         var scratch: std.heap.ArenaAllocator = .init(self.gpa);
         defer scratch.deinit();
 
-        if (p.kind.isStack()) {
+        if (p.scope == .marked) {
+            self.runMarkedAction(scratch.allocator(), p.kind);
+        } else if (p.kind.isStack()) {
             self.runStackAction(scratch.allocator(), p.kind, p.target());
         } else {
             const target = p.target();
@@ -1078,6 +1181,36 @@ pub const App = struct {
             }
         }
         self.refresh();
+    }
+
+    /// Applies the action to every marked row, then clears the marks so the
+    /// next keystroke does not silently repeat a bulk operation.
+    fn runMarkedAction(self: *App, a: Allocator, kind: ActionKind) void {
+        const list = self.marked[@intFromEnum(self.tab)];
+        var ok: usize = 0;
+        var failed: usize = 0;
+        var last_error: []const u8 = "";
+
+        for (list.items) |target| {
+            const out = self.runOne(a, kind.perMember(), target) orelse {
+                failed += 1;
+                last_error = "could not spawn";
+                continue;
+            };
+            if (out.ok) {
+                ok += 1;
+            } else {
+                failed += 1;
+                last_error = firstLine(out.message());
+            }
+        }
+
+        if (failed == 0) {
+            self.setStatus(false, "{s}: {d} of {d} ok", .{ verb(kind), ok, list.items.len });
+        } else {
+            self.setStatus(true, "{s}: {d} ok, {d} failed — {s}", .{ verb(kind), ok, failed, last_error });
+        }
+        self.clearMarks(self.tab);
     }
 
     /// Applies the per-member action to every container in the stack, then
@@ -1524,7 +1657,7 @@ const Harness = struct {
     /// Must match `logName` in test/fake-container.zig: the fake keys its log
     /// on its parent's pid, which is this process.
     fn logName(buf: []u8) []const u8 {
-        return std.fmt.bufPrint(buf, "zc-fake-{d}.log", .{std.c.getpid()}) catch "zc-fake.log";
+        return std.fmt.bufPrint(buf, "/tmp/zc-fake-{d}.log", .{std.c.getpid()}) catch "/tmp/zc-fake.log";
     }
 
     threaded: *Io.Threaded,
@@ -1850,6 +1983,99 @@ test "the sort column wraps back to the natural order" {
     }
     app.cycleSort();
     try std.testing.expectEqual(@as(?u8, null), app.sort_column[tab]);
+}
+
+test "a bulk action hits every marked row and nothing else" {
+    const gpa = std.testing.allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+
+    var app: App = .init(gpa, h.io);
+    defer app.deinit();
+    app.refresh();
+
+    // Names must be copied out: runPending refreshes, which resets the arena
+    // every container string lives in.
+    const expect_alloc = arena.allocator();
+    const first = try expect_alloc.dupe(u8, app.containers[app.sourceIndex(.containers, 0).?].id);
+    const second = try expect_alloc.dupe(u8, app.containers[app.sourceIndex(.containers, 1).?].id);
+    const third = try expect_alloc.dupe(u8, app.containers[app.sourceIndex(.containers, 2).?].id);
+
+    // Mark the first two rows; toggleMark steps down, so two presses do it.
+    app.cursor[@intFromEnum(Tab.containers)] = 0;
+    app.toggleMark();
+    app.toggleMark();
+    try std.testing.expectEqual(@as(usize, 2), app.markedCount(.containers));
+
+    app.request(.container_delete);
+    try std.testing.expect(app.pending != null); // bulk always confirms
+    app.runPending();
+
+    const calls = try h.invocations(expect_alloc);
+    for ([_][]const u8{ first, second }) |name| {
+        const line = try std.fmt.allocPrint(expect_alloc, "delete --force {s}", .{name});
+        try std.testing.expect(Harness.contains(calls, line));
+    }
+    const untouched = try std.fmt.allocPrint(expect_alloc, "delete --force {s}", .{third});
+    try std.testing.expect(!Harness.contains(calls, untouched));
+
+    // Marks are consumed, so the next keystroke cannot repeat the action.
+    try std.testing.expectEqual(@as(usize, 0), app.markedCount(.containers));
+}
+
+test "marks are held by name, so a reorder cannot move them" {
+    const gpa = std.testing.allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var app: App = .init(gpa, h.io);
+    defer app.deinit();
+    app.refresh();
+
+    app.cursor[@intFromEnum(Tab.containers)] = 0;
+    const marked_name = app.containers[app.sourceIndex(.containers, 0).?].id;
+    app.toggleMark();
+
+    // Reversing the order must not transfer the mark to a different row.
+    app.cycleSort();
+    app.toggleSortDirection();
+
+    var found = false;
+    for (0..app.itemCount()) |row| {
+        const index = app.sourceIndex(.containers, row).?;
+        if (!app.isMarked(.containers, index)) continue;
+        try std.testing.expectEqualStrings(marked_name, app.containers[index].id);
+        found = true;
+    }
+    try std.testing.expect(found);
+    try std.testing.expectEqual(@as(usize, 1), app.markedCount(.containers));
+}
+
+test "toggling twice leaves nothing marked" {
+    const gpa = std.testing.allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var app: App = .init(gpa, h.io);
+    defer app.deinit();
+    app.refresh();
+
+    app.cursor[@intFromEnum(Tab.containers)] = 0;
+    app.toggleMark();
+    try std.testing.expectEqual(@as(usize, 1), app.markedCount(.containers));
+
+    app.cursor[@intFromEnum(Tab.containers)] = 0;
+    app.toggleMark();
+    try std.testing.expectEqual(@as(usize, 0), app.markedCount(.containers));
+
+    // With nothing marked, an action falls back to the cursor row, and start
+    // runs without a confirmation the way it always has.
+    app.cursor[@intFromEnum(Tab.containers)] = 0;
+    app.request(.container_start);
+    try std.testing.expect(app.pending == null);
 }
 
 test "each tab keeps its own filter" {
