@@ -56,6 +56,36 @@ pub const Key = union(enum) {
     none,
 };
 
+test "escape does not swallow the keystrokes after it" {
+    // A pipe stands in for the terminal: readKey only ever reads bytes, and
+    // this is the one part of term.zig that can be exercised without a tty.
+    var fds: [2]posix.fd_t = undefined;
+    if (std.c.pipe(&fds) != 0) return error.PipeFailed;
+    defer _ = std.c.close(fds[0]);
+
+    var t: Terminal = .{
+        .io = undefined,
+        .orig = undefined,
+        .in_fd = fds[0],
+        .out = std.Io.File.stdout(),
+    };
+
+    // Escape immediately followed by typing, which is what a fast typist and
+    // a pasted string both look like.
+    _ = std.c.write(fds[1], "\x1b/ab", 4);
+    // Real cursor keys must still decode, including the four-byte page keys.
+    _ = std.c.write(fds[1], "\x1b[A\x1b[5~", 7);
+    _ = std.c.close(fds[1]);
+
+    try std.testing.expectEqual(Key.escape, t.readKey());
+    try std.testing.expectEqual(Key{ .ch = '/' }, t.readKey());
+    try std.testing.expectEqual(Key{ .ch = 'a' }, t.readKey());
+    try std.testing.expectEqual(Key{ .ch = 'b' }, t.readKey());
+    try std.testing.expectEqual(Key.up, t.readKey());
+    try std.testing.expectEqual(Key.page_up, t.readKey());
+    try std.testing.expectEqual(Key.none, t.readKey());
+}
+
 pub const Terminal = struct {
     io: std.Io,
     orig: posix.termios,
@@ -63,6 +93,9 @@ pub const Terminal = struct {
     out: std.Io.File,
     raw: bool = false,
     alt: bool = false,
+    /// One byte read while probing an escape sequence that turned out not to
+    /// be part of one, handed back to the next `readKey`.
+    pending: ?u8 = null,
 
     pub fn init(io: std.Io) !Terminal {
         const in = std.Io.File.stdin();
@@ -129,12 +162,9 @@ pub const Terminal = struct {
     }
 
     pub fn readKey(self: *Terminal) Key {
-        var buf: [8]u8 = undefined;
-        const n = posix.read(self.in_fd, buf[0..1]) catch return .none;
-        if (n == 0) return .none;
-
-        return switch (buf[0]) {
-            0x1b => self.readEscapeSeq(&buf),
+        const first = self.nextByte() orelse return .none;
+        return switch (first) {
+            0x1b => self.readEscapeSeq(),
             '\r', '\n' => .enter,
             '\t' => .tab,
             127, 8 => .backspace,
@@ -142,12 +172,32 @@ pub const Terminal = struct {
         };
     }
 
-    /// Called after a lone ESC byte. A bare ESC (no follow-up within the
-    /// VTIME window) is the escape key itself.
-    fn readEscapeSeq(self: *Terminal, buf: []u8) Key {
-        const n = posix.read(self.in_fd, buf[0..2]) catch return .escape;
-        if (n < 2 or buf[0] != '[') return .escape;
-        return switch (buf[1]) {
+    fn nextByte(self: *Terminal) ?u8 {
+        if (self.pending) |byte| {
+            self.pending = null;
+            return byte;
+        }
+        var buf: [1]u8 = undefined;
+        const n = posix.read(self.in_fd, &buf) catch return null;
+        return if (n == 0) null else buf[0];
+    }
+
+    /// Called after a lone ESC byte. A bare ESC — nothing follows within the
+    /// VTIME window — is the escape key itself.
+    ///
+    /// Reads one byte at a time and pushes back anything that turns out not to
+    /// belong to the sequence. Reading two bytes eagerly and discarding them
+    /// meant that pressing escape and then typing swallowed the next two
+    /// keystrokes, which on the list view were commands.
+    fn readEscapeSeq(self: *Terminal) Key {
+        const introducer = self.nextByte() orelse return .escape;
+        if (introducer != '[') {
+            self.pending = introducer;
+            return .escape;
+        }
+
+        const final = self.nextByte() orelse return .escape;
+        return switch (final) {
             'A' => .up,
             'B' => .down,
             'C' => .right,
@@ -157,8 +207,7 @@ pub const Terminal = struct {
             'Z' => .back_tab,
             // "\x1b[5~" / "\x1b[6~" — consume the trailing '~'.
             '5', '6' => |c| blk: {
-                var tilde: [1]u8 = undefined;
-                _ = posix.read(self.in_fd, &tilde) catch {};
+                _ = self.nextByte();
                 break :blk if (c == '5') .page_up else .page_down;
             },
             else => .none,
