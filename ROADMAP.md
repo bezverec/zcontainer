@@ -39,10 +39,25 @@ test fail, so it is load-bearing rather than decorative.
 Two of these tests failed on first run — both were wrong expectations about
 sort order in the test, not bugs. That ordering is now pinned.
 
-**Still missing:** the web front end has only 2 tests. `web.zig`'s routing,
-token check and origin check were verified with `curl` by hand and deserve the
-same treatment, most naturally by driving `handleRequest` against a fabricated
-request rather than a live socket.
+The web front end got the same treatment. `std.http.Server` works on a
+Reader/Writer pair rather than a socket, so a whole request can be driven
+through the real routing by feeding it bytes. The checks that previously
+existed only as `curl` commands in a terminal are now tests: no token, wrong
+token, a right-length wrong token, a query-string token where only a header
+will do, a foreign `Origin`, `GET` on an action, an unknown action, a missing
+target, an unknown path — and that a state response never contains a container
+environment.
+
+**50 tests, no daemon required.**
+
+## Done: CI
+
+`.github/workflows/ci.yml` builds and tests on macOS and Linux, checks
+formatting, and fails if the tests leave a stray file behind.
+
+Linux is compile-only in spirit — Apple's `container` runs nowhere else — but
+it earned its place immediately: it caught that `std.c.ioctl` needs libc named
+explicitly, which macOS had been hiding by always linking it.
 
 ## v0.1 — filling in the obvious gaps
 
@@ -90,10 +105,6 @@ selection. `container builder` also has its own lifecycle worth surfacing —
 the builder shows up today as just another container.
 
 ## Foundations, alongside the above
-
-**CI.** There is none. The fake `container` is what made this possible — the
-suite no longer needs a daemon — so a workflow that builds and tests on every
-push is now a small step.
 
 **Distributed binaries.** Releases carry no artifacts today, because a
 `-Dcpu=native` build is tuned to the machine that produced it. A `baseline`

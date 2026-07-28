@@ -15,6 +15,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     exe_module.addOptions("build_options", options);
 
@@ -29,6 +30,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/web.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     web_module.addOptions("build_options", options);
 
@@ -58,6 +60,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("test/fake-container.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     // @embedFile cannot reach outside a module's directory, so the fixtures
     // the fake serves are handed to it as named imports instead.
@@ -86,13 +89,22 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     test_module.addOptions("build_options", test_options);
 
     const exe_tests = b.addTest(.{ .root_module = test_module });
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
-    const web_tests = b.addTest(.{ .root_module = web_exe.root_module });
+    const web_test_module = b.createModule(.{
+        .root_source_file = b.path("src/web.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    web_test_module.addOptions("build_options", test_options);
+
+    const web_tests = b.addTest(.{ .root_module = web_test_module });
     const run_web_tests = b.addRunArtifact(web_tests);
 
     const test_step = b.step("test", "Run tests");

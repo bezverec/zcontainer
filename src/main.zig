@@ -110,7 +110,7 @@ fn runShell(terminal: *term.Terminal, app: *App, io: std.Io, target: []const u8)
     terminal.leaveAltScreen();
     terminal.leaveRaw();
 
-    const banner = "\r\n\x1b[1mzcontainer\x1b[0m: shell in " ;
+    const banner = "\r\n\x1b[1mzcontainer\x1b[0m: shell in ";
     terminal.writeAll(banner);
     terminal.writeAll(target);
     terminal.writeAll(" — exit to return\r\n");

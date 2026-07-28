@@ -1,0 +1,51 @@
+name: CI
+
+# The test suite stands in for the `container` CLI with a fake, so none of
+# this needs a container daemon — which is what makes CI possible at all.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS is the only platform zcontainer targets, since Apple's
+        # `container` runs nowhere else. Linux is built anyway: it costs one
+        # runner and catches accidental reliance on Darwin-only APIs early.
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Check formatting
+        run: zig fmt --check build.zig src test
+
+      - name: Test
+        run: zig build test --summary all
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Check the binaries answer for themselves
+        run: |
+          ./zig-out/bin/zcontainer --version
+          ./zig-out/bin/zcontainer-web --version
+
+      - name: Working directory is left clean
+        # The fake writes an invocation log; every test must clear its own.
+        run: |
+          if ls zc-fake-*.log >/dev/null 2>&1; then
+            echo "tests left a fake-container log behind:"
+            ls -l zc-fake-*.log
+            exit 1
+          fi
+          git diff --exit-code

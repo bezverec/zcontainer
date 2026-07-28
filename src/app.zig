@@ -1190,8 +1190,11 @@ pub fn firstLine(s: []const u8) []const u8 {
 const build_options = @import("build_options");
 
 const Harness = struct {
-    /// Must match `log_name` in test/fake-container.zig.
-    const log_name = "zc-fake-invocations.log";
+    /// Must match `logName` in test/fake-container.zig: the fake keys its log
+    /// on its parent's pid, which is this process.
+    fn logName(buf: []u8) []const u8 {
+        return std.fmt.bufPrint(buf, "zc-fake-{d}.log", .{std.c.getpid()}) catch "zc-fake.log";
+    }
 
     threaded: *Io.Threaded,
     io: Io,
@@ -1208,21 +1211,24 @@ const Harness = struct {
             .previous_exe = cli.exe,
             .gpa = gpa,
         };
-        Io.Dir.cwd().deleteFile(h.io, log_name) catch {};
+        var name_buf: [64]u8 = undefined;
+        Io.Dir.cwd().deleteFile(h.io, logName(&name_buf)) catch {};
         cli.exe = build_options.fake_container;
         return h;
     }
 
     fn deinit(self: *Harness) void {
         cli.exe = self.previous_exe;
-        Io.Dir.cwd().deleteFile(self.io, log_name) catch {};
+        var name_buf: [64]u8 = undefined;
+        Io.Dir.cwd().deleteFile(self.io, logName(&name_buf)) catch {};
         self.threaded.deinit();
         self.gpa.destroy(self.threaded);
     }
 
     /// Every command the fake was asked to run, in order.
     fn invocations(self: *Harness, arena: Allocator) ![]const []const u8 {
-        const text = Io.Dir.cwd().readFileAlloc(self.io, log_name, arena, .limited(1 << 20)) catch
+        var name_buf: [64]u8 = undefined;
+        const text = Io.Dir.cwd().readFileAlloc(self.io, logName(&name_buf), arena, .limited(1 << 20)) catch
             return &.{};
         var lines: std.ArrayList([]const u8) = .empty;
         var it = std.mem.splitScalar(u8, text, '\n');

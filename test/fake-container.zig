@@ -6,10 +6,14 @@
 //! testing catches a `delete` that forgets `--force`, or an action wired to
 //! the wrong subcommand.
 //!
-//! Every invocation appends its argv to `log_name` in the working directory,
-//! one line per call. The path is fixed rather than configurable because a
-//! test's `Io` is created with an empty environment, so the child would never
-//! see a variable the test tried to set.
+//! Every invocation appends its argv to `zc-fake-<parent pid>.log` in the
+//! working directory, one line per call.
+//!
+//! The name is derived from the parent's pid rather than passed in, because a
+//! test's `Io` is created with an empty environment and would never get a
+//! variable through to the child. Keying on the parent also isolates the test
+//! binaries from each other: `zig build test` runs them in parallel, and a
+//! single shared log had them overwriting one another's records.
 //!
 //! Failure paths are not simulated here — a test that wants a non-zero exit
 //! points `cli.exe` at `/usr/bin/false`, which is simpler and needs no flag.
@@ -24,8 +28,10 @@ const networks = @embedFile("networks.json");
 const stats = @embedFile("stats.json");
 const df = @embedFile("df.json");
 
-/// Kept in step with `Harness.log_name` in src/app.zig.
-pub const log_name = "zc-fake-invocations.log";
+/// Kept in step with `Harness.logName` in src/app.zig.
+fn logName(buf: []u8) ![]const u8 {
+    return std.fmt.bufPrint(buf, "zc-fake-{d}.log", .{std.c.getppid()});
+}
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -45,10 +51,12 @@ pub fn main(init: std.process.Init) !void {
 /// Appends one line per invocation. Rewrites the whole file rather than
 /// seeking: the log only ever holds a handful of lines per test.
 fn recordInvocation(arena: std.mem.Allocator, io: std.Io, args: []const []const u8) !void {
+    var name_buf: [64]u8 = undefined;
+    const path = try logName(&name_buf);
     const cwd = std.Io.Dir.cwd();
 
     var log: std.Io.Writer.Allocating = .init(arena);
-    if (cwd.readFileAlloc(io, log_name, arena, .limited(1 << 20))) |previous| {
+    if (cwd.readFileAlloc(io, path, arena, .limited(1 << 20))) |previous| {
         try log.writer.writeAll(previous);
     } else |_| {}
 
@@ -58,7 +66,7 @@ fn recordInvocation(arena: std.mem.Allocator, io: std.Io, args: []const []const 
     }
     try log.writer.writeByte('\n');
 
-    try cwd.writeFile(io, .{ .sub_path = log_name, .data = log.writer.buffered() });
+    try cwd.writeFile(io, .{ .sub_path = path, .data = log.writer.buffered() });
 }
 
 fn responseFor(args: []const []const u8) []const u8 {

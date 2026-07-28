@@ -434,13 +434,184 @@ fn firstLine(s: []const u8) []const u8 {
     return trimmed[0..end];
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+//
+// `std.http.Server` works on a Reader/Writer pair rather than a socket, so a
+// whole request can be driven through the real routing by feeding it bytes.
+// These are the checks that were previously only ever made by hand with curl,
+// and they are the ones guarding a server that can delete containers.
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+const test_token = "0123456789abcdef0123456789abcdef";
+
+/// Runs one raw HTTP request through `handleRequest` and returns the raw
+/// response. `cli.exe` is aimed at the fake so endpoints that shell out do
+/// not touch a real daemon.
+fn testRequest(gpa: Allocator, raw: []const u8) ![]u8 {
+    var threaded: Io.Threaded = .init(gpa, .{});
+    defer threaded.deinit();
+
+    const previous_exe = cli.exe;
+    cli.exe = build_options.fake_container;
+    defer cli.exe = previous_exe;
+
+    // The fake logs its argv keyed on this process; these tests never read it,
+    // so clear it rather than leaving a file in the working directory.
+    defer {
+        var name_buf: [64]u8 = undefined;
+        const log = std.fmt.bufPrint(&name_buf, "zc-fake-{d}.log", .{std.c.getpid()}) catch "";
+        if (log.len > 0) Io.Dir.cwd().deleteFile(threaded.io(), log) catch {};
+    }
+
+    var ctx: Context = .{
+        .gpa = gpa,
+        .io = threaded.io(),
+        .token = test_token,
+        .port = 7373,
+    };
+
+    var reader: Io.Reader = .fixed(raw);
+    var response: Io.Writer.Allocating = .init(gpa);
+    errdefer response.deinit();
+
+    var server: std.http.Server = .init(&reader, &response.writer);
+    var request = try server.receiveHead();
+    try handleRequest(&ctx, &request);
+    // toOwnedSlice, not written(): the caller frees this, and the allocation
+    // is longer than the bytes actually written.
+    return response.toOwnedSlice();
+}
+
+fn expectStatus(gpa: Allocator, raw: []const u8, expected: []const u8) !void {
+    const response = try testRequest(gpa, raw);
+    defer gpa.free(response);
+    testing.expect(std.mem.startsWith(u8, response, expected)) catch |err| {
+        const end = std.mem.indexOfScalar(u8, response, '\r') orelse response.len;
+        std.debug.print("expected status {s}, got {s}\n", .{ expected, response[0..end] });
+        return err;
+    };
+}
+
+test "the page is refused without a valid token" {
+    const gpa = testing.allocator;
+    try expectStatus(gpa, "GET / HTTP/1.1\r\nHost: 127.0.0.1:7373\r\n\r\n", "HTTP/1.1 401");
+    try expectStatus(gpa, "GET /?token=wrong HTTP/1.1\r\nHost: x\r\n\r\n", "HTTP/1.1 401");
+    // A token of the right length but wrong content must not pass either.
+    try expectStatus(
+        gpa,
+        "GET /?token=ffffffffffffffffffffffffffffffff HTTP/1.1\r\nHost: x\r\n\r\n",
+        "HTTP/1.1 401",
+    );
+}
+
+test "the page is served with a valid token and carries it to the script" {
+    const gpa = testing.allocator;
+    const response = try testRequest(gpa, "GET /?token=" ++ test_token ++ " HTTP/1.1\r\nHost: x\r\n\r\n");
+    defer gpa.free(response);
+
+    try testing.expect(std.mem.startsWith(u8, response, "HTTP/1.1 200"));
+    try testing.expect(std.mem.indexOf(u8, response, "text/html") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "window.ZC_TOKEN=\"" ++ test_token ++ "\"") != null);
+}
+
+test "api endpoints need the token in a header, not the query" {
+    const gpa = testing.allocator;
+
+    try expectStatus(gpa, "GET /api/state HTTP/1.1\r\nHost: x\r\n\r\n", "HTTP/1.1 401");
+    // A cross-site form post can set a query string but not a header, so a
+    // query-string token must not be accepted here.
+    try expectStatus(gpa, "GET /api/state?token=" ++ test_token ++ " HTTP/1.1\r\nHost: x\r\n\r\n", "HTTP/1.1 401");
+    try expectStatus(
+        gpa,
+        "GET /api/state HTTP/1.1\r\nHost: x\r\nx-zcontainer-token: " ++ test_token ++ "\r\n\r\n",
+        "HTTP/1.1 200",
+    );
+}
+
+test "a foreign origin is refused even with a valid token" {
+    const gpa = testing.allocator;
+
+    try expectStatus(
+        gpa,
+        "GET /api/state HTTP/1.1\r\nHost: x\r\nOrigin: https://evil.example\r\n" ++
+            "x-zcontainer-token: " ++ test_token ++ "\r\n\r\n",
+        "HTTP/1.1 403",
+    );
+    // Our own origin, in both spellings, is fine.
+    for ([_][]const u8{ "http://127.0.0.1:7373", "http://localhost:7373" }) |origin| {
+        var buf: [256]u8 = undefined;
+        const raw = try std.fmt.bufPrint(
+            &buf,
+            "GET /api/state HTTP/1.1\r\nHost: x\r\nOrigin: {s}\r\nx-zcontainer-token: " ++
+                test_token ++ "\r\n\r\n",
+            .{origin},
+        );
+        try expectStatus(gpa, raw, "HTTP/1.1 200");
+    }
+}
+
+test "actions refuse anything but POST" {
+    const gpa = testing.allocator;
+    const auth = "x-zcontainer-token: " ++ test_token ++ "\r\n";
+
+    try expectStatus(
+        gpa,
+        "GET /api/action?kind=stop&target=web-api HTTP/1.1\r\nHost: x\r\n" ++ auth ++ "\r\n",
+        "HTTP/1.1 405",
+    );
+    try expectStatus(
+        gpa,
+        "POST /api/action?kind=stop&target=web-api HTTP/1.1\r\nHost: x\r\n" ++ auth ++ "\r\n",
+        "HTTP/1.1 200",
+    );
+    // An unknown action must be rejected rather than guessed at.
+    try expectStatus(
+        gpa,
+        "POST /api/action?kind=rm-rf&target=web-api HTTP/1.1\r\nHost: x\r\n" ++ auth ++ "\r\n",
+        "HTTP/1.1 400",
+    );
+    // A non-prune action with no target must not run against nothing.
+    try expectStatus(
+        gpa,
+        "POST /api/action?kind=stop HTTP/1.1\r\nHost: x\r\n" ++ auth ++ "\r\n",
+        "HTTP/1.1 400",
+    );
+}
+
+test "unknown paths are not found" {
+    const gpa = testing.allocator;
+    try expectStatus(
+        gpa,
+        "GET /etc/passwd HTTP/1.1\r\nHost: x\r\nx-zcontainer-token: " ++ test_token ++ "\r\n\r\n",
+        "HTTP/1.1 404",
+    );
+}
+
+test "state never serialises container environments" {
+    const gpa = testing.allocator;
+    const response = try testRequest(
+        gpa,
+        "GET /api/state HTTP/1.1\r\nHost: x\r\nx-zcontainer-token: " ++ test_token ++ "\r\n\r\n",
+    );
+    defer gpa.free(response);
+
+    // The fixture the fake serves carries a deliberately named secret.
+    try testing.expect(std.mem.indexOf(u8, response, "must-not-be-shown") == null);
+    try testing.expect(std.mem.indexOf(u8, response, "SECRET_TOKEN") == null);
+    // But the data the page actually needs is there.
+    try testing.expect(std.mem.indexOf(u8, response, "web-api") != null);
+    try testing.expect(std.mem.indexOf(u8, response, "\"stack\":\"shop\"") != null);
+}
+
 test tokenValid {
-    var ctx: Context = .{ .gpa = std.testing.allocator, .io = undefined, .token = "abcdef", .port = 1 };
-    try std.testing.expect(tokenValid(&ctx, "abcdef"));
-    try std.testing.expect(!tokenValid(&ctx, "abcdeg"));
-    try std.testing.expect(!tokenValid(&ctx, "abcde"));
-    try std.testing.expect(!tokenValid(&ctx, null));
-    try std.testing.expect(!tokenValid(&ctx, ""));
+    var ctx: Context = .{ .gpa = testing.allocator, .io = undefined, .token = "abcdef", .port = 1 };
+    try testing.expect(tokenValid(&ctx, "abcdef"));
+    try testing.expect(!tokenValid(&ctx, "abcdeg"));
+    try testing.expect(!tokenValid(&ctx, "abcde"));
+    try testing.expect(!tokenValid(&ctx, null));
+    try testing.expect(!tokenValid(&ctx, ""));
 }
 
 test queryParam {
