@@ -1,0 +1,8 @@
+[
+  { "blockReadBytes": 300, "blockWriteBytes": 400, "cpuUsageUsec": 5000000,
+    "id": "web-db", "memoryLimitBytes": 2147483648, "memoryUsageBytes": 200000000,
+    "networkRxBytes": 100, "networkTxBytes": 200, "numProcesses": 9 },
+  { "blockReadBytes": 30, "blockWriteBytes": 0, "cpuUsageUsec": 1000000,
+    "id": "web-api", "memoryLimitBytes": 1073741824, "memoryUsageBytes": 150000000,
+    "networkRxBytes": 10, "networkTxBytes": 20, "numProcesses": 11 }
+]

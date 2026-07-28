@@ -8,7 +8,9 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
-pub const exe = "container";
+/// The executable every command is dispatched through. A variable rather than
+/// a constant so tests can point it at a stand-in; nothing else reassigns it.
+pub var exe: []const u8 = "container";
 
 /// Raw result of one CLI invocation. `ok` is false for a non-zero exit.
 pub const Output = struct {
@@ -252,25 +254,33 @@ const RawNetwork = struct {
     } = null,
 };
 
-/// Runs `argv`, decodes its stdout as a JSON array of `Raw`, and returns the
-/// decoded slice. Errors are reported through `err_out` so the UI can show the
+/// Runs `argv` and returns its stdout, or null when the command could not be
+/// run or failed. Errors are reported through `err_out` so the UI can show the
 /// CLI's own message instead of a generic failure.
-fn fetch(
-    comptime Raw: type,
-    arena: Allocator,
-    io: Io,
-    argv: []const []const u8,
-    err_out: *?[]const u8,
-) ![]const Raw {
+///
+/// Kept separate from decoding so that every parser below can be tested
+/// against fixture text without spawning anything.
+fn run(arena: Allocator, io: Io, argv: []const []const u8, err_out: *?[]const u8) ?[]const u8 {
     const out = exec(arena, io, argv, .limited(16 * 1024 * 1024)) catch {
-        err_out.* = "cannot run `" ++ exe ++ "` — is the Apple container CLI installed and on PATH?";
-        return &.{};
+        err_out.* = "cannot run `container` — is the Apple container CLI installed and on PATH?";
+        return null;
     };
     if (!out.ok) {
         err_out.* = out.message();
-        return &.{};
+        return null;
     }
-    const text = std.mem.trim(u8, out.stdout, " \t\r\n");
+    return out.stdout;
+}
+
+/// Decodes a JSON array of `Raw`. An empty document is an empty list, not an
+/// error: `container` prints nothing when it has nothing to report.
+fn decode(
+    comptime Raw: type,
+    arena: Allocator,
+    json: []const u8,
+    err_out: *?[]const u8,
+) []const Raw {
+    const text = std.mem.trim(u8, json, " \t\r\n");
     if (text.len == 0) return &.{};
     return std.json.parseFromSliceLeaky([]const Raw, arena, text, json_opts) catch {
         err_out.* = "could not decode JSON from `container`";
@@ -279,7 +289,13 @@ fn fetch(
 }
 
 pub fn listContainers(arena: Allocator, io: Io, err_out: *?[]const u8) ![]Container {
-    const raws = try fetch(RawContainer, arena, io, &.{ exe, "list", "--all", "--format", "json" }, err_out);
+    const argv = &.{ exe, "list", "--all", "--format", "json" };
+    const text = run(arena, io, argv, err_out) orelse return &.{};
+    return parseContainers(arena, text, err_out);
+}
+
+pub fn parseContainers(arena: Allocator, json: []const u8, err_out: *?[]const u8) ![]Container {
+    const raws = decode(RawContainer, arena, json, err_out);
     const list = try arena.alloc(Container, raws.len);
 
     for (raws, list) |raw, *c| {
@@ -337,7 +353,13 @@ pub fn listContainers(arena: Allocator, io: Io, err_out: *?[]const u8) ![]Contai
 }
 
 pub fn listImages(arena: Allocator, io: Io, err_out: *?[]const u8) ![]Image {
-    const raws = try fetch(RawImage, arena, io, &.{ exe, "image", "list", "--format", "json" }, err_out);
+    const argv = &.{ exe, "image", "list", "--format", "json" };
+    const text = run(arena, io, argv, err_out) orelse return &.{};
+    return parseImages(arena, text, err_out);
+}
+
+pub fn parseImages(arena: Allocator, json: []const u8, err_out: *?[]const u8) ![]Image {
+    const raws = decode(RawImage, arena, json, err_out);
     const list = try arena.alloc(Image, raws.len);
 
     for (raws, list) |raw, *img| {
@@ -364,7 +386,13 @@ pub fn listImages(arena: Allocator, io: Io, err_out: *?[]const u8) ![]Image {
 }
 
 pub fn listVolumes(arena: Allocator, io: Io, err_out: *?[]const u8) ![]Volume {
-    const raws = try fetch(RawVolume, arena, io, &.{ exe, "volume", "list", "--format", "json" }, err_out);
+    const argv = &.{ exe, "volume", "list", "--format", "json" };
+    const text = run(arena, io, argv, err_out) orelse return &.{};
+    return parseVolumes(arena, text, err_out);
+}
+
+pub fn parseVolumes(arena: Allocator, json: []const u8, err_out: *?[]const u8) ![]Volume {
+    const raws = decode(RawVolume, arena, json, err_out);
     const list = try arena.alloc(Volume, raws.len);
     for (raws, list) |raw, *v| {
         const cfg = raw.configuration;
@@ -381,7 +409,13 @@ pub fn listVolumes(arena: Allocator, io: Io, err_out: *?[]const u8) ![]Volume {
 }
 
 pub fn listNetworks(arena: Allocator, io: Io, err_out: *?[]const u8) ![]Network {
-    const raws = try fetch(RawNetwork, arena, io, &.{ exe, "network", "list", "--format", "json" }, err_out);
+    const argv = &.{ exe, "network", "list", "--format", "json" };
+    const text = run(arena, io, argv, err_out) orelse return &.{};
+    return parseNetworks(arena, text, err_out);
+}
+
+pub fn parseNetworks(arena: Allocator, json: []const u8, err_out: *?[]const u8) ![]Network {
+    const raws = decode(RawNetwork, arena, json, err_out);
     const list = try arena.alloc(Network, raws.len);
     for (raws, list) |raw, *n| {
         const cfg = raw.configuration;
@@ -411,7 +445,13 @@ const RawStat = struct {
 /// `--no-stream` takes a single sample and exits, which is what a polling UI
 /// wants; the streaming form would never return.
 pub fn listStats(arena: Allocator, io: Io, err_out: *?[]const u8) ![]Stat {
-    const raws = try fetch(RawStat, arena, io, &.{ exe, "stats", "--no-stream", "--format", "json" }, err_out);
+    const argv = &.{ exe, "stats", "--no-stream", "--format", "json" };
+    const text = run(arena, io, argv, err_out) orelse return &.{};
+    return parseStats(arena, text, err_out);
+}
+
+pub fn parseStats(arena: Allocator, json: []const u8, err_out: *?[]const u8) ![]Stat {
+    const raws = decode(RawStat, arena, json, err_out);
     const list = try arena.alloc(Stat, raws.len);
     for (raws, list) |raw, *s| s.* = .{
         .id = raw.id,
@@ -464,7 +504,11 @@ pub fn diskUsage(arena: Allocator, io: Io) DiskUsage {
     const out = exec(arena, io, &.{ exe, "system", "df", "--format", "json" }, .limited(256 * 1024)) catch
         return .{};
     if (!out.ok) return .{};
-    const text = std.mem.trim(u8, out.stdout, " \t\r\n");
+    return parseDiskUsage(arena, out.stdout);
+}
+
+pub fn parseDiskUsage(arena: Allocator, json: []const u8) DiskUsage {
+    const text = std.mem.trim(u8, json, " \t\r\n");
     if (text.len == 0) return .{};
 
     const raw = std.json.parseFromSliceLeaky(RawDiskUsage, arena, text, json_opts) catch return .{};
@@ -566,6 +610,137 @@ test splitReference {
 test shortDigest {
     try std.testing.expectEqualStrings("16e22a550f38", shortDigest("sha256:16e22a550f3863206a3f"));
     try std.testing.expectEqualStrings("abc", shortDigest("abc"));
+}
+
+// ---------------------------------------------------------------------------
+// Decoding tests
+//
+// These run against fixtures rather than the live daemon, so they cover shapes
+// this machine has never produced: a stopped container, one with no `status`
+// at all, an untagged image, an empty list and malformed output.
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+fn testArena() std.heap.ArenaAllocator {
+    return .init(testing.allocator);
+}
+
+test "parseContainers decodes running, stopped and status-less containers" {
+    var arena = testArena();
+    defer arena.deinit();
+    var err: ?[]const u8 = null;
+
+    const list = try parseContainers(arena.allocator(), @embedFile("testdata/containers.json"), &err);
+    try testing.expectEqual(@as(?[]const u8, null), err);
+    try testing.expectEqual(@as(usize, 3), list.len);
+
+    // Running containers sort first, then alphabetically.
+    try testing.expectEqualStrings("web-api", list[0].id);
+    try testing.expect(list[0].isRunning());
+    try testing.expectEqualStrings("192.168.64.10", list[0].ip);
+    try testing.expectEqualStrings("shop", list[0].stack_label);
+    try testing.expectEqual(@as(usize, 1), list[0].ports.len);
+    try testing.expectEqual(@as(u16, 8080), list[0].ports[0].host_port);
+    try testing.expectEqual(@as(usize, 1), list[0].mounts.len);
+
+    // Stopped containers follow, alphabetically among themselves.
+    // No `status` key at all must read as stopped rather than crash.
+    const loner = list[1];
+    try testing.expectEqualStrings("loner", loner.id);
+    try testing.expectEqualStrings("stopped", loner.state);
+
+    // An explicit stopped state, with no network attached.
+    const db = list[2];
+    try testing.expectEqualStrings("web-db", db.id);
+    try testing.expectEqualStrings("stopped", db.state);
+    try testing.expectEqualStrings("", db.ip);
+}
+
+test "parseContainers accepts an empty list and blank output" {
+    var arena = testArena();
+    defer arena.deinit();
+    var err: ?[]const u8 = null;
+
+    const empty = try parseContainers(arena.allocator(), @embedFile("testdata/containers_empty.json"), &err);
+    try testing.expectEqual(@as(usize, 0), empty.len);
+    try testing.expectEqual(@as(?[]const u8, null), err);
+
+    // `container` prints nothing when it has nothing to report.
+    const blank = try parseContainers(arena.allocator(), "   \n", &err);
+    try testing.expectEqual(@as(usize, 0), blank.len);
+    try testing.expectEqual(@as(?[]const u8, null), err);
+}
+
+test "malformed JSON reports an error instead of failing" {
+    var arena = testArena();
+    defer arena.deinit();
+    var err: ?[]const u8 = null;
+
+    const list = try parseContainers(arena.allocator(), "{not json", &err);
+    try testing.expectEqual(@as(usize, 0), list.len);
+    try testing.expect(err != null);
+}
+
+test "parseImages splits references and tolerates missing variants" {
+    var arena = testArena();
+    defer arena.deinit();
+    var err: ?[]const u8 = null;
+
+    const list = try parseImages(arena.allocator(), @embedFile("testdata/images.json"), &err);
+    try testing.expectEqual(@as(usize, 2), list.len);
+
+    // Sorted by full reference, so docker.io comes before example.com.
+    try testing.expectEqualStrings("postgres", list[0].name);
+    try testing.expectEqualStrings("18", list[0].tag);
+    try testing.expectEqualStrings("aaaabbbbcccc", list[0].digest);
+    try testing.expectEqualStrings("arm64", list[0].arch);
+
+    // A registry with a port must not be mistaken for a tag.
+    try testing.expectEqualStrings("example.com:5000/team/web-api", list[1].reference);
+    try testing.expectEqualStrings("web-api", list[1].name);
+    try testing.expectEqualStrings("latest", list[1].tag);
+    try testing.expectEqualStrings("", list[1].arch); // no variants in the fixture
+}
+
+test "parseStats sorts by id so the cursor cannot drift" {
+    var arena = testArena();
+    defer arena.deinit();
+    var err: ?[]const u8 = null;
+
+    // The fixture lists web-db first; the parser must reorder.
+    const list = try parseStats(arena.allocator(), @embedFile("testdata/stats.json"), &err);
+    try testing.expectEqual(@as(usize, 2), list.len);
+    try testing.expectEqualStrings("web-api", list[0].id);
+    try testing.expectEqualStrings("web-db", list[1].id);
+    try testing.expectEqual(@as(u64, 1000000), list[0].cpu_usec);
+}
+
+test "parseVolumes and parseNetworks" {
+    var arena = testArena();
+    defer arena.deinit();
+    var err: ?[]const u8 = null;
+
+    const volumes = try parseVolumes(arena.allocator(), @embedFile("testdata/volumes.json"), &err);
+    try testing.expectEqual(@as(usize, 1), volumes.len);
+    try testing.expectEqualStrings("pgdata", volumes[0].name);
+    try testing.expectEqual(@as(u64, 549755813888), volumes[0].size_bytes);
+
+    const networks = try parseNetworks(arena.allocator(), @embedFile("testdata/networks.json"), &err);
+    try testing.expectEqual(@as(usize, 1), networks.len);
+    try testing.expectEqualStrings("192.168.64.0/24", networks[0].subnet);
+    try testing.expectEqualStrings("nat", networks[0].mode);
+}
+
+test "parseDiskUsage" {
+    var arena = testArena();
+    defer arena.deinit();
+
+    const disk = parseDiskUsage(arena.allocator(), @embedFile("testdata/df.json"));
+    try testing.expectEqual(@as(u64, 82645798912), disk.images.size_bytes);
+    try testing.expectEqual(@as(u64, 81035415552), disk.images.reclaimable);
+    try testing.expectEqual(@as(u64, 3), disk.containers.total);
+    try testing.expectEqual(@as(DiskUsage, .{}), parseDiskUsage(arena.allocator(), ""));
 }
 
 test namePrefix {

@@ -52,7 +52,44 @@ pub fn build(b: *std.Build) void {
     const run_web_step = b.step("web", "Run zcontainer-web");
     run_web_step.dependOn(&run_web.step);
 
-    const exe_tests = b.addTest(.{ .root_module = exe.root_module });
+    // Stands in for the `container` CLI so the tests can assert which command
+    // the program actually chose to run.
+    const fake_module = b.createModule(.{
+        .root_source_file = b.path("test/fake-container.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    // @embedFile cannot reach outside a module's directory, so the fixtures
+    // the fake serves are handed to it as named imports instead.
+    for ([_][]const u8{
+        "containers.json",
+        "images.json",
+        "volumes.json",
+        "networks.json",
+        "stats.json",
+        "df.json",
+    }) |fixture| {
+        fake_module.addAnonymousImport(fixture, .{
+            .root_source_file = b.path(b.fmt("src/testdata/{s}", .{fixture})),
+        });
+    }
+
+    const fake = b.addExecutable(.{ .name = "fake-container", .root_module = fake_module });
+
+    // The tests get their own module so they can be handed an extra option —
+    // the path to the fake — without that path ending up in the real binary.
+    const test_options = b.addOptions();
+    test_options.addOption([]const u8, "version", version);
+    test_options.addOptionPath("fake_container", fake.getEmittedBin());
+
+    const test_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_module.addOptions("build_options", test_options);
+
+    const exe_tests = b.addTest(.{ .root_module = test_module });
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
     const web_tests = b.addTest(.{ .root_module = web_exe.root_module });

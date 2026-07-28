@@ -13,28 +13,36 @@ follows logs and opens a shell.
 Everything is read through `container --format json` and acted on by shelling
 out. There is no daemon protocol, no cache and no state on disk.
 
-## The honest first priority: a fake `container`
+## Done: a fake `container` — 32 tests
 
-The highest-leverage work is not a feature.
+This was the first priority, and it has landed.
 
-All 20 tests exercise pure functions — column widths, byte formatting, stack
-grouping, token comparison. **Nothing tests the program against the `container`
-CLI itself.** Parsing, action dispatch and every error path are covered only by
-having run them by hand against one machine's setup.
+`cli.zig` is now split so that running a command and decoding its output are
+separate: every `listX` has a `parseX` counterpart taking text. Fixtures in
+`src/testdata/` cover shapes this machine has never produced — a **stopped**
+container, one with no `status` key at all, an untagged image, a registry
+reference with a port, an empty list, blank output and malformed JSON.
 
-The fix is a fake `container` executable placed first on `PATH` during tests: a
-small script that prints canned JSON and records the argv it was called with.
-That unlocks, in one move:
+`test/fake-container.zig` stands in for the real CLI, serving those fixtures
+and appending its argv to a log. `cli.exe` is a variable so tests can point at
+it. That covers what unit tests structurally cannot:
 
-- decoding real fixtures, including a **stopped** container, an untagged image
-  and an empty daemon — none of which the live machine has ever presented
-- asserting that pressing `d` runs `container delete --force <id>` and nothing
-  else, which is the kind of mistake no unit test currently catches
-- error paths: non-zero exits, malformed JSON, a missing binary
-- CI, where no container daemon exists at all
+- `delete` really passes `--force`, `prune` really targets the current tab, and
+  a stack action really touches every member and nothing outside it
+- a refresh issues no mutating command at all
+- a missing binary is reported rather than fatal (`cli.exe` aimed at a path
+  that does not exist)
 
-Until this exists, every change carries more risk than the green test count
-suggests. Everything below assumes it lands first.
+The `--force` assertion was checked by mutation: removing the flag makes the
+test fail, so it is load-bearing rather than decorative.
+
+Two of these tests failed on first run — both were wrong expectations about
+sort order in the test, not bugs. That ordering is now pinned.
+
+**Still missing:** the web front end has only 2 tests. `web.zig`'s routing,
+token check and origin check were verified with `curl` by hand and deserve the
+same treatment, most naturally by driving `handleRequest` against a fabricated
+request rather than a live socket.
 
 ## v0.1 — filling in the obvious gaps
 
@@ -83,8 +91,9 @@ the builder shows up today as just another container.
 
 ## Foundations, alongside the above
 
-**CI.** There is none. With the fake `container` in place, a workflow can build
-and test on every push.
+**CI.** There is none. The fake `container` is what made this possible — the
+suite no longer needs a daemon — so a workflow that builds and tests on every
+push is now a small step.
 
 **Distributed binaries.** Releases carry no artifacts today, because a
 `-Dcpu=native` build is tuned to the machine that produced it. A `baseline`

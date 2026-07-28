@@ -1,0 +1,3 @@
+[{ "configuration": { "creationDate": "2026-01-01T00:00:00Z", "driver": "local",
+   "format": "ext4", "name": "pgdata", "sizeInBytes": 549755813888,
+   "source": "/volumes/pgdata/volume.img" }, "id": "pgdata" }]

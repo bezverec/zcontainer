@@ -1,0 +1,53 @@
+[
+  {
+    "configuration": {
+      "creationDate": "2026-03-01T10:00:00Z",
+      "id": "web-api",
+      "image": { "reference": "example.com:5000/team/web-api:1.4" },
+      "initProcess": {
+        "arguments": ["node", "server.js"],
+        "environment": ["NODE_ENV=production", "SECRET_TOKEN=must-not-be-shown"],
+        "executable": "docker-entrypoint.sh",
+        "workingDirectory": "/app"
+      },
+      "labels": { "com.docker.compose.project": "shop" },
+      "mounts": [{ "destination": "/data", "source": "/host/data" }],
+      "platform": { "architecture": "arm64", "os": "linux" },
+      "publishedPorts": [
+        { "containerPort": 8080, "hostAddress": "127.0.0.1", "hostPort": 8080, "proto": "tcp" }
+      ],
+      "resources": { "cpus": 4, "memoryInBytes": 1073741824 }
+    },
+    "id": "web-api",
+    "status": {
+      "networks": [
+        { "hostname": "web-api", "ipv4Address": "192.168.64.10/24", "ipv4Gateway": "192.168.64.1" }
+      ],
+      "startedDate": "2026-03-01T10:00:05Z",
+      "state": "running"
+    }
+  },
+  {
+    "configuration": {
+      "creationDate": "2026-03-01T09:00:00Z",
+      "id": "web-db",
+      "image": { "reference": "docker.io/library/postgres:18" },
+      "labels": {},
+      "platform": { "architecture": "arm64", "os": "linux" },
+      "resources": { "cpus": 2, "memoryInBytes": 2147483648 }
+    },
+    "id": "web-db",
+    "status": { "networks": [], "startedDate": "", "state": "stopped" }
+  },
+  {
+    "configuration": {
+      "creationDate": "2026-02-01T08:00:00Z",
+      "id": "loner",
+      "image": { "reference": "alpine" },
+      "labels": {},
+      "platform": { "architecture": "arm64", "os": "linux" },
+      "resources": { "cpus": 1, "memoryInBytes": 268435456 }
+    },
+    "id": "loner"
+  }
+]

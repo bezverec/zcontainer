@@ -240,6 +240,23 @@ restores the display when the shell exits.
 rendering can be tested against plain buffers. `cli.zig` knows about neither,
 which is why the browser front end reuses it without a single change.
 
+### Tests
+
+```bash
+zig build test
+```
+
+The suite needs no container daemon. `test/fake-container.zig` stands in for
+the CLI: it serves the fixtures in `src/testdata/` and appends every argv it
+was called with to a log, so a test can assert which command the program
+actually chose to run. `cli.exe` is a variable purely so tests can point at it.
+
+That matters because the mistakes worth catching here are not arithmetic — they
+are a `delete` that forgets `--force`, a prune aimed at the wrong tab, or a
+stack action reaching a container outside the stack. The fixtures also cover
+shapes a healthy machine never produces: a stopped container, one with no
+`status` key, an untagged image, an empty list and malformed JSON.
+
 Two invariants are pinned by tests because breaking them corrupts the whole
 display rather than one cell:
 

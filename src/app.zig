@@ -1179,6 +1179,210 @@ pub fn firstLine(s: []const u8) []const u8 {
     return trimmed[0..end];
 }
 
+// ---------------------------------------------------------------------------
+// Integration tests
+//
+// These drive the real action path with `cli.exe` pointed at a stand-in that
+// records its argv. Unit tests cannot catch an action wired to the wrong
+// subcommand, or a delete that forgets --force; these can.
+// ---------------------------------------------------------------------------
+
+const build_options = @import("build_options");
+
+const Harness = struct {
+    /// Must match `log_name` in test/fake-container.zig.
+    const log_name = "zc-fake-invocations.log";
+
+    threaded: *Io.Threaded,
+    io: Io,
+    previous_exe: []const u8,
+    gpa: Allocator,
+
+    fn init(gpa: Allocator) !Harness {
+        const threaded = try gpa.create(Io.Threaded);
+        threaded.* = .init(gpa, .{});
+
+        const h: Harness = .{
+            .threaded = threaded,
+            .io = threaded.io(),
+            .previous_exe = cli.exe,
+            .gpa = gpa,
+        };
+        Io.Dir.cwd().deleteFile(h.io, log_name) catch {};
+        cli.exe = build_options.fake_container;
+        return h;
+    }
+
+    fn deinit(self: *Harness) void {
+        cli.exe = self.previous_exe;
+        Io.Dir.cwd().deleteFile(self.io, log_name) catch {};
+        self.threaded.deinit();
+        self.gpa.destroy(self.threaded);
+    }
+
+    /// Every command the fake was asked to run, in order.
+    fn invocations(self: *Harness, arena: Allocator) ![]const []const u8 {
+        const text = Io.Dir.cwd().readFileAlloc(self.io, log_name, arena, .limited(1 << 20)) catch
+            return &.{};
+        var lines: std.ArrayList([]const u8) = .empty;
+        var it = std.mem.splitScalar(u8, text, '\n');
+        while (it.next()) |line| {
+            if (line.len > 0) try lines.append(arena, line);
+        }
+        return lines.items;
+    }
+
+    fn contains(list: []const []const u8, needle: []const u8) bool {
+        for (list) |line| {
+            if (std.mem.eql(u8, line, needle)) return true;
+        }
+        return false;
+    }
+};
+
+test "refresh runs exactly the expected read-only commands" {
+    const gpa = std.testing.allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+
+    var app: App = .init(gpa, h.io);
+    defer app.deinit();
+    app.refresh();
+
+    // The fixture the fake serves has three containers.
+    try std.testing.expectEqual(@as(usize, 3), app.containers.len);
+    try std.testing.expectEqual(@as(usize, 2), app.images.len);
+    try std.testing.expectEqualStrings("running", app.system);
+
+    const calls = try h.invocations(arena.allocator());
+    try std.testing.expect(Harness.contains(calls, "list --all --format json"));
+    try std.testing.expect(Harness.contains(calls, "image list --format json"));
+    try std.testing.expect(Harness.contains(calls, "stats --no-stream --format json"));
+    try std.testing.expect(Harness.contains(calls, "system df --format json"));
+
+    // A refresh must never mutate anything.
+    for (calls) |call| {
+        for ([_][]const u8{ "start", "stop", "kill", "delete", "prune" }) |mutating| {
+            try std.testing.expect(!std.mem.startsWith(u8, call, mutating));
+        }
+    }
+}
+
+test "each action dispatches the command it claims to" {
+    const gpa = std.testing.allocator;
+
+    const cases = [_]struct { kind: ActionKind, expected: []const u8 }{
+        .{ .kind = .container_start, .expected = "start web-api" },
+        .{ .kind = .container_stop, .expected = "stop web-api" },
+        .{ .kind = .container_kill, .expected = "kill web-api" },
+        // The one that matters most: a forgotten --force silently fails on a
+        // running container.
+        .{ .kind = .container_delete, .expected = "delete --force web-api" },
+    };
+
+    for (cases) |case| {
+        var h = try Harness.init(gpa);
+        defer h.deinit();
+
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        defer arena.deinit();
+
+        var app: App = .init(gpa, h.io);
+        defer app.deinit();
+        app.refresh();
+        app.tab = .containers;
+        app.cursor[@intFromEnum(Tab.containers)] = 0; // web-api, the running one
+
+        app.request(case.kind);
+        if (app.pending != null) app.runPending();
+
+        const calls = try h.invocations(arena.allocator());
+        std.testing.expect(Harness.contains(calls, case.expected)) catch |err| {
+            std.debug.print("expected {s}\ngot:\n", .{case.expected});
+            for (calls) |c| std.debug.print("  {s}\n", .{c});
+            return err;
+        };
+    }
+}
+
+test "prune targets the current tab" {
+    const gpa = std.testing.allocator;
+
+    const cases = [_]struct { tab: Tab, expected: []const u8 }{
+        .{ .tab = .containers, .expected = "prune" },
+        .{ .tab = .images, .expected = "image prune" },
+        .{ .tab = .volumes, .expected = "volume prune" },
+        .{ .tab = .networks, .expected = "network prune" },
+    };
+
+    for (cases) |case| {
+        var h = try Harness.init(gpa);
+        defer h.deinit();
+
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        defer arena.deinit();
+
+        var app: App = .init(gpa, h.io);
+        defer app.deinit();
+        app.refresh();
+        app.tab = case.tab;
+
+        app.requestPrune();
+        try std.testing.expect(app.pending != null); // prune always confirms
+        app.runPending();
+
+        const calls = try h.invocations(arena.allocator());
+        try std.testing.expect(Harness.contains(calls, case.expected));
+    }
+}
+
+test "a stack action touches every member and nothing else" {
+    const gpa = std.testing.allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+
+    var app: App = .init(gpa, h.io);
+    defer app.deinit();
+    app.refresh();
+    app.tab = .stacks;
+
+    // The fixture labels web-api into stack "shop"; it is the only member.
+    const shop = for (app.stacks, 0..) |stack, i| {
+        if (std.mem.eql(u8, stack.name, "shop")) break i;
+    } else return error.StackNotFound;
+
+    app.cursor[@intFromEnum(Tab.stacks)] = shop;
+    app.request(.stack_stop);
+    try std.testing.expect(app.pending != null);
+    app.runPending();
+
+    const calls = try h.invocations(arena.allocator());
+    try std.testing.expect(Harness.contains(calls, "stop web-api"));
+    // web-db is in a different stack and must not have been touched.
+    try std.testing.expect(!Harness.contains(calls, "stop web-db"));
+}
+
+test "a missing container binary is reported, not fatal" {
+    const gpa = std.testing.allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    cli.exe = "/nonexistent/definitely-not-here";
+
+    var app: App = .init(gpa, h.io);
+    defer app.deinit();
+    app.refresh();
+
+    try std.testing.expectEqual(@as(usize, 0), app.containers.len);
+    try std.testing.expect(app.status_is_error);
+    try std.testing.expect(std.mem.indexOf(u8, app.status(), "cannot run") != null);
+}
+
 test stackNameFor {
     const blank: cli.Container = .{
         .id = "",
