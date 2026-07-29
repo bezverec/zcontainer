@@ -86,13 +86,17 @@ three-second reload, which is only possible because the page updates in place.
 
 **60 tests.**
 
+## Done: the browser shows what the TUI does
+
+A published-ports column, and a detail sheet on clicking any row — the same
+fields the TUI puts behind `enter`, ports and mounts included. Rendered as
+text rather than markup, so a value cannot become markup.
+
 ## v0.1 — the rest
 
-**Ports column and per-container detail in the browser.** The web page shows
-less than the TUI does; published ports and mounts are already in the payload
-and simply are not rendered.
-
 **Copy files (`container cp`).** One command, no streaming, immediately useful.
+Needs a two-field prompt in the TUI, which is new UI machinery: there is no
+free-text input today beyond the filter.
 
 ## v0.2 — streaming in the browser
 

@@ -162,7 +162,11 @@ function bytes(n) {
 
 function age(iso) {
   if (!iso) return "";
-  const s = (Date.now() - Date.parse(iso)) / 1000;
+  const t = Date.parse(iso);
+  // The epoch is `container`'s stand-in for "no date"; Apple's vminit image
+  // carries it, and "20000d ago" helps nobody.
+  if (isNaN(t) || t <= 0) return "";
+  const s = (Date.now() - t) / 1000;
   if (isNaN(s)) return "";
   if (s < 60) return "just now";
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
@@ -172,6 +176,23 @@ function age(iso) {
 
 function stateClass(s) {
   return s === "running" ? "running" : s === "stopped" ? "stopped" : "other";
+}
+
+/// Published ports, narrow enough for a table cell: the host port and the
+/// container port it reaches.
+function portsShort(c) {
+  if (!c.ports || !c.ports.length) return "–";
+  const shown = c.ports.slice(0, 2)
+    .map((p) => p.host_port === p.container_port ? `${p.host_port}` : `${p.host_port}→${p.container_port}`);
+  return shown.join(", ") + (c.ports.length > 2 ? ` +${c.ports.length - 2}` : "");
+}
+
+/// The same ports written out in full, for a tooltip and the detail sheet.
+function portsLong(c) {
+  if (!c.ports || !c.ports.length) return "no published ports";
+  return c.ports
+    .map((p) => `${p.host_address || "0.0.0.0"}:${p.host_port} → ${p.container_port}/${p.proto}`)
+    .join("\n");
 }
 
 // Builds stacks the same way the server labels them: containers sharing a
@@ -329,12 +350,13 @@ function renderView() {
 
   if (tab === "containers") {
     put(v, table(
-      ["Name", "State", "Image", "IP", "CPU", "Memory", ""],
-      rowsFor("containers").map((c) => `<tr>
+      ["Name", "State", "Image", "IP", "Ports", "CPU", "Memory", ""],
+      rowsFor("containers").map((c) => `<tr data-row="${c.id}">
         <td class="mono">${c.id}</td>
         <td class="state ${stateClass(c.state)}">${c.state}</td>
         <td class="mono" title="${c.image}">${c.image}</td>
         <td class="mono num">${c.ip || "–"}</td>
+        <td class="mono num" title="${portsLong(c)}">${portsShort(c)}</td>
         <td class="num">${c.cpus}</td>
         <td class="num">${bytes(c.memory_bytes)}</td>
         <td><div class="actions">
@@ -352,7 +374,7 @@ function renderView() {
   } else if (tab === "stacks") {
     put(v, table(
       ["Stack", "State", "Containers", "CPU", "Memory", ""],
-      rowsFor("stacks").map((s) => `<tr>
+      rowsFor("stacks").map((s) => `<tr data-row="${s.name}">
         <td class="mono">${s.name}</td>
         <td class="state ${s.running === 0 ? "stopped" : s.running === s.members.length ? "running" : "other"}">
           ${s.running === 0 ? "stopped" : s.running === s.members.length ? "running" : "partial"}</td>
@@ -367,7 +389,7 @@ function renderView() {
   } else if (tab === "images") {
     put(v, table(
       ["Name", "Tag", "Reference", "Digest", "Arch", "Created", ""],
-      rowsFor("images").map((i) => `<tr>
+      rowsFor("images").map((i) => `<tr data-row="${i.reference}">
         <td class="mono">${i.name}</td><td>${i.tag}</td>
         <td class="mono" title="${i.reference}">${i.reference}</td>
         <td class="mono">${i.digest}</td><td>${i.arch}</td><td>${age(i.created)}</td>
@@ -379,7 +401,7 @@ function renderView() {
   } else if (tab === "volumes") {
     put(v, table(
       ["Name", "Driver", "Source", "Format", "Size", ""],
-      rowsFor("volumes").map((x) => `<tr>
+      rowsFor("volumes").map((x) => `<tr data-row="${x.name}">
         <td class="mono">${x.name}</td><td>${x.driver}</td>
         <td class="mono" title="${x.source}">${x.source}</td>
         <td>${x.format}</td><td class="num">${bytes(x.size_bytes)}</td>
@@ -388,7 +410,7 @@ function renderView() {
   } else if (tab === "networks") {
     put(v, table(
       ["Name", "Mode", "Subnet", "Gateway", ""],
-      rowsFor("networks").map((n) => `<tr>
+      rowsFor("networks").map((n) => `<tr data-row="${n.name}">
         <td class="mono">${n.name}</td><td>${n.mode}</td>
         <td class="mono num">${n.subnet}</td><td class="mono num">${n.gateway}</td>
         <td><div class="actions">${act("Delete", "delete-network", n.name, true)}</div></td></tr>`),
@@ -396,7 +418,7 @@ function renderView() {
   } else if (tab === "stats") {
     put(v, table(
       ["Name", "Memory", "Net Rx/Tx", "Block R/W", "PIDs"],
-      rowsFor("stats").map((s) => `<tr>
+      rowsFor("stats").map((s) => `<tr data-row="${s.id}">
         <td class="mono">${s.id}</td>
         <td class="num">${bytes(s.memory_bytes)} / ${bytes(s.memory_limit)}</td>
         <td class="num">${bytes(s.net_rx)} / ${bytes(s.net_tx)}</td>
@@ -493,6 +515,76 @@ document.addEventListener("click", async (ev) => {
     if (el.dataset.confirm && !confirm(`${label}?\n\nThis cannot be undone.`)) return;
     await runAction(kind, target, label);
   }
+});
+
+/// The detail sheet for a row, mirroring what the TUI shows on enter.
+/// Environments are absent because the server never sends them.
+function detailsFor(row) {
+  const pair = (k, v) => (v === undefined || v === null || v === "" ? [] : [[k, String(v)]]);
+  switch (tab) {
+    case "containers": return [
+      ...pair("ID", row.id), ...pair("State", row.state), ...pair("Image", row.image),
+      ...pair("Stack", row.stack), ...pair("Platform", row.os), ...pair("Architecture", row.arch),
+      ...pair("Hostname", row.hostname), ...pair("IP", row.ip), ...pair("Gateway", row.gateway),
+      ...pair("CPUs", row.cpus), ...pair("Memory", bytes(row.memory_bytes)),
+      ...pair("Created", row.created), ...pair("Started", row.started),
+      ...pair("Working dir", row.workdir), ...pair("Executable", row.executable),
+      ["Published ports", portsLong(row)],
+      ["Mounts", (row.mounts || []).map((m) => `${m.source} → ${m.destination}`).join("\n") || "none"],
+    ];
+    case "stacks": return [
+      ...pair("Stack", row.name), ...pair("Containers", row.members.length),
+      ...pair("Running", row.running), ...pair("CPUs", row.cpus),
+      ...pair("Memory", bytes(row.memory)),
+      ["Members", row.members.map((m) => `${m.id}  ${m.state}  ${m.image}`).join("\n")],
+    ];
+    case "images": return [
+      ...pair("Reference", row.reference), ...pair("Name", row.name), ...pair("Tag", row.tag),
+      ...pair("Digest", row.digest), ...pair("Platform", row.os),
+      ...pair("Architecture", row.arch), ...pair("Created", row.created),
+    ];
+    case "volumes": return [
+      ...pair("Name", row.name), ...pair("Driver", row.driver), ...pair("Format", row.format),
+      ...pair("Size", bytes(row.size_bytes)), ...pair("Source", row.source),
+      ...pair("Created", row.created),
+    ];
+    case "networks": return [
+      ...pair("Name", row.name), ...pair("Mode", row.mode), ...pair("Subnet", row.subnet),
+      ...pair("Gateway", row.gateway), ...pair("Created", row.created),
+    ];
+    case "stats": return [
+      ...pair("Container", row.id),
+      ...pair("Memory used", bytes(row.memory_bytes)), ...pair("Memory limit", bytes(row.memory_limit)),
+      ...pair("Network Rx", bytes(row.net_rx)), ...pair("Network Tx", bytes(row.net_tx)),
+      ...pair("Block read", bytes(row.block_read)), ...pair("Block write", bytes(row.block_write)),
+      ...pair("Processes", row.processes),
+    ];
+  }
+  return [];
+}
+
+function identityOf(row) {
+  return row.id ?? row.reference ?? row.name;
+}
+
+function showDetails(key) {
+  const row = rowsFor(tab).find((r) => identityOf(r) === key);
+  if (!row) return;
+  const fields = detailsFor(row);
+  const width = Math.max(...fields.map(([k]) => k.length));
+  // Rendered as text so that a value containing markup cannot become markup.
+  $("modal-body").textContent = fields
+    .map(([k, v]) => `${k.padEnd(width)}  ${String(v).split("\n").join("\n" + " ".repeat(width + 2))}`)
+    .join("\n");
+  $("modal-title").textContent = `${tab.replace(/s$/, "")} ${key}`;
+  $("modal").showModal();
+}
+
+// A click anywhere on a row that is not a button opens its details.
+document.addEventListener("click", (ev) => {
+  if (ev.target.closest("button")) return;
+  const tr = ev.target.closest("tr[data-row]");
+  if (tr) showDetails(tr.dataset.row);
 });
 
 // The box shows the current tab's own query, so switching tabs does not carry

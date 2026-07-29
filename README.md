@@ -29,6 +29,8 @@ shop-db               running     docker.io/library/postgres:…  192.168.64.2  
 ## Requirements
 
 - macOS with the Apple `container` CLI installed and on `PATH`
+  (developed against 1.0.0 and 1.2.0; the JSON shapes it reads are the same
+  in both)
 - Zig 0.16.0
 
 ## Build and run
@@ -115,7 +117,8 @@ The page lists the same six views, refreshes every three seconds, and offers
 start, stop, kill, delete, prune and a log viewer. It filters and sorts like
 the TUI: type in the box to narrow the current tab, click a column header to
 sort by it, click again to reverse and a third time to return to the server's
-order.
+order. Clicking a row opens its details — the same sheet the TUI shows on
+`enter`, including published ports and mounts.
 
 Container environment variables are deliberately **not** served — they
 routinely carry credentials, and a browser is a leakier place for them than a

@@ -1586,6 +1586,10 @@ pub fn formatBytes(buf: []u8, n: u64) []const u8 {
 /// "2026-07-24T12:23:12Z" -> "3d ago". Returns "" for unparseable input.
 pub fn formatAge(buf: []u8, iso: []const u8, now: i64) []const u8 {
     const then = parseIso8601(iso) orelse return "";
+    // The Unix epoch is what `container` reports when it has no real date —
+    // Apple's own vminit image carries it. Rendering that as "56y ago" is
+    // worse than saying nothing.
+    if (then <= 0) return "";
     const secs = now - then;
     if (secs < 0) return "just now";
     if (secs < 60) return "just now";
@@ -2181,6 +2185,8 @@ test formatAge {
     try std.testing.expectEqualStrings("3d ago", formatAge(&buf, "2026-07-24T12:00:00Z", base + 3 * 86400));
     try std.testing.expectEqualStrings("5m ago", formatAge(&buf, "2026-07-24T12:00:00Z", base + 300));
     try std.testing.expectEqualStrings("", formatAge(&buf, "", base));
+    // `container` uses the epoch for "no date"; it must not read as an age.
+    try std.testing.expectEqualStrings("", formatAge(&buf, "1970-01-01T00:00:00Z", base));
 }
 
 test firstLine {
