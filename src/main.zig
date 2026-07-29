@@ -208,6 +208,7 @@ fn handleKey(app: *App, screen: *Screen, key: term.Key, size: term.Size) void {
 
     switch (app.view) {
         .confirm => handleConfirmKey(app, screen, key, size),
+        .prompt => handlePromptKey(app, screen, key, size),
         .help => handleHelpKey(app, key),
         .pager => handlePagerKey(app, key, size),
         .list => handleListKey(app, screen, key, size),
@@ -229,6 +230,24 @@ fn handleConfirmKey(app: *App, screen: *Screen, key: term.Key, size: term.Size) 
             else => app.cancelPending(),
         },
         else => app.cancelPending(),
+    }
+}
+
+/// The copy prompt: keystrokes are a path, not commands.
+fn handlePromptKey(app: *App, screen: *Screen, key: term.Key, size: term.Size) void {
+    switch (key) {
+        .enter => {
+            // The second enter runs `container copy`, which blocks.
+            screen.drawBusy(app, size, "copying…", .{});
+            app.submitPrompt();
+        },
+        .escape => app.cancelPrompt(),
+        .backspace => app.promptBackspace(),
+        .ch => |c| switch (c) {
+            0x20...0x7e => app.promptAppend(c),
+            else => {},
+        },
+        else => {},
     }
 }
 
@@ -362,6 +381,7 @@ fn handleListKey(app: *App, screen: *Screen, key: term.Key, size: term.Size) voi
                 app.showLogs();
             },
             'e' => app.requestShell(),
+            'c' => app.beginCopy(),
             else => {},
         },
     }

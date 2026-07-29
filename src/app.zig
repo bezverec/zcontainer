@@ -53,6 +53,34 @@ pub const View = enum {
     help,
     /// A yes/no prompt guarding a destructive action.
     confirm,
+    /// A line of free text being typed, over the list.
+    prompt,
+};
+
+/// A single-line text prompt over the list. Copying a file needs two paths,
+/// so it runs as two consecutive steps rather than one cramped field.
+const Prompt = struct {
+    const Step = enum { copy_source, copy_destination };
+
+    step: Step,
+    input_buf: [512]u8 = undefined,
+    input_len: usize = 0,
+    /// The first path, kept while the second is typed.
+    source_buf: [512]u8 = undefined,
+    source_len: usize = 0,
+
+    fn input(self: *const Prompt) []const u8 {
+        return self.input_buf[0..self.input_len];
+    }
+
+    fn source(self: *const Prompt) []const u8 {
+        return self.source_buf[0..self.source_len];
+    }
+
+    fn setInput(self: *Prompt, text: []const u8) void {
+        self.input_len = @min(text.len, self.input_buf.len);
+        @memcpy(self.input_buf[0..self.input_len], text[0..self.input_len]);
+    }
 };
 
 pub const ActionKind = enum {
@@ -183,6 +211,7 @@ pub const App = struct {
     text_scroll: usize = 0,
 
     pending: ?Pending = null,
+    prompt: ?Prompt = null,
     quit: bool = false,
 
     /// Survives arena resets, so CPU deltas span refreshes.
@@ -437,6 +466,102 @@ pub const App = struct {
     }
 
     // -----------------------------------------------------------------------
+    // Copying files
+    // -----------------------------------------------------------------------
+
+    pub fn promptInput(self: *const App) []const u8 {
+        return if (self.prompt) |*p| p.input() else "";
+    }
+
+    pub fn promptLabel(self: *const App) []const u8 {
+        const p = if (self.prompt) |*prompt| prompt else return "";
+        return switch (p.step) {
+            .copy_source => "copy from",
+            .copy_destination => "copy to",
+        };
+    }
+
+    /// Opens the copy prompt, pre-filling the container side so the common
+    /// case — pulling a file out of the selected container — is a path away.
+    pub fn beginCopy(self: *App) void {
+        var p: Prompt = .{ .step = .copy_source };
+        if (self.selectedContainer()) |c| {
+            var buf: [512]u8 = undefined;
+            p.setInput(std.fmt.bufPrint(&buf, "{s}:", .{c.id}) catch "");
+        }
+        self.prompt = p;
+        self.view = .prompt;
+    }
+
+    pub fn promptAppend(self: *App, byte: u8) void {
+        const p = if (self.prompt) |*prompt| prompt else return;
+        if (p.input_len >= p.input_buf.len) return;
+        p.input_buf[p.input_len] = byte;
+        p.input_len += 1;
+    }
+
+    pub fn promptBackspace(self: *App) void {
+        const p = if (self.prompt) |*prompt| prompt else return;
+        if (p.input_len > 0) p.input_len -= 1;
+    }
+
+    pub fn cancelPrompt(self: *App) void {
+        self.prompt = null;
+        self.view = .list;
+        self.setStatus(false, "cancelled", .{});
+    }
+
+    /// Advances the prompt, or runs the copy once both paths are in.
+    pub fn submitPrompt(self: *App) void {
+        const p = if (self.prompt) |*prompt| prompt else return;
+        const text = p.input();
+        if (text.len == 0) return self.cancelPrompt();
+
+        switch (p.step) {
+            .copy_source => {
+                p.source_len = @min(text.len, p.source_buf.len);
+                @memcpy(p.source_buf[0..p.source_len], text[0..p.source_len]);
+                p.input_len = 0;
+                p.step = .copy_destination;
+            },
+            .copy_destination => {
+                var source_buf: [512]u8 = undefined;
+                const source_len = p.source_len;
+                @memcpy(source_buf[0..source_len], p.source_buf[0..source_len]);
+                var dest_buf: [512]u8 = undefined;
+                const dest_len = text.len;
+                @memcpy(dest_buf[0..dest_len], text);
+
+                self.prompt = null;
+                self.view = .list;
+                self.runCopy(source_buf[0..source_len], dest_buf[0..dest_len]);
+            },
+        }
+    }
+
+    fn runCopy(self: *App, source: []const u8, destination: []const u8) void {
+        var scratch: std.heap.ArenaAllocator = .init(self.gpa);
+        defer scratch.deinit();
+
+        const out = cli.exec(
+            scratch.allocator(),
+            self.io,
+            &.{ cli.exe, "copy", source, destination },
+            .limited(256 * 1024),
+        ) catch {
+            self.setStatus(true, "could not run `{s} copy`", .{cli.exe});
+            return;
+        };
+
+        if (out.ok) {
+            self.setStatus(false, "copied {s} to {s}", .{ source, destination });
+        } else {
+            self.setStatus(true, "copy failed: {s}", .{firstLine(out.message())});
+        }
+        self.refresh();
+    }
+
+    // -----------------------------------------------------------------------
     // Marking rows for a bulk action
     // -----------------------------------------------------------------------
 
@@ -617,7 +742,13 @@ pub const App = struct {
 
         if (err) |e| {
             self.setStatus(true, "{s}", .{firstLine(e)});
-        } else if (self.status_is_error or self.status_transient) {
+            // A refresh error describes the current reading, so a later
+            // healthy one should clear it.
+            self.status_transient = true;
+        } else if (self.status_transient) {
+            // Only progress notes and stale refresh errors go. An action's
+            // own result — including a failure — has to outlive the refresh
+            // that runs immediately after it, or it is never seen at all.
             self.clearStatus();
         }
         // Also clamps the cursor, so it runs instead of clampCursor here.
@@ -1987,6 +2118,84 @@ test "the sort column wraps back to the natural order" {
     }
     app.cycleSort();
     try std.testing.expectEqual(@as(?u8, null), app.sort_column[tab]);
+}
+
+test "the copy prompt collects two paths and runs container copy" {
+    const gpa = std.testing.allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+
+    var app: App = .init(gpa, h.io);
+    defer app.deinit();
+    app.refresh();
+    app.cursor[@intFromEnum(Tab.containers)] = 0;
+
+    // The container side is pre-filled, so only the path has to be typed.
+    app.beginCopy();
+    try std.testing.expectEqualStrings("web-api:", app.promptInput());
+    try std.testing.expectEqualStrings("copy from", app.promptLabel());
+
+    for ("/etc/hosts") |c| app.promptAppend(c);
+    app.submitPrompt();
+
+    // Second step starts empty and asks for the other side.
+    try std.testing.expectEqualStrings("copy to", app.promptLabel());
+    try std.testing.expectEqualStrings("", app.promptInput());
+
+    for ("/tmp/hosts") |c| app.promptAppend(c);
+    app.submitPrompt();
+
+    try std.testing.expect(app.prompt == null);
+    const calls = try h.invocations(arena.allocator());
+    try std.testing.expect(Harness.contains(calls, "copy web-api:/etc/hosts /tmp/hosts"));
+}
+
+test "an empty copy path cancels rather than running a half-formed command" {
+    const gpa = std.testing.allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+
+    var app: App = .init(gpa, h.io);
+    defer app.deinit();
+    app.refresh();
+
+    app.beginCopy();
+    app.promptBackspace();
+    while (app.promptInput().len > 0) app.promptBackspace();
+    app.submitPrompt();
+
+    try std.testing.expect(app.prompt == null);
+    const calls = try h.invocations(arena.allocator());
+    for (calls) |call| try std.testing.expect(!std.mem.startsWith(u8, call, "copy"));
+}
+
+test "a failed action keeps its message through the refresh that follows" {
+    const gpa = std.testing.allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var app: App = .init(gpa, h.io);
+    defer app.deinit();
+    app.refresh();
+
+    // Only the action fails; listing still works, so the refresh that runs
+    // straight afterwards has no error of its own to report. It used to wipe
+    // the action's error anyway, leaving nothing on screen.
+    app.queue(.container_stop, "zc-fail");
+    try std.testing.expect(app.pending != null);
+    app.runPending();
+
+    try std.testing.expect(app.status_is_error);
+    try std.testing.expect(std.mem.indexOf(u8, app.status(), "zc-fail") != null);
+    try std.testing.expect(std.mem.indexOf(u8, app.status(), "no such container") != null);
+    // And the lists are intact, so this really is an action-only failure.
+    try std.testing.expectEqual(@as(usize, 3), app.containers.len);
 }
 
 test "a bulk action hits every marked row and nothing else" {

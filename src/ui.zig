@@ -34,7 +34,7 @@ pub fn render(a: *const App, size: term.Size, w: *Writer) !void {
     }
 
     switch (a.view) {
-        .list, .confirm => try renderList(a, size, w),
+        .list, .confirm, .prompt => try renderList(a, size, w),
         .pager => try renderPager(a, size, w),
         .help => try renderHelp(a, size, w),
     }
@@ -499,21 +499,13 @@ fn renderStatusLine(a: *const App, width: usize, w: *Writer) !void {
         return;
     }
 
-    // While typing a filter the status line becomes the prompt, with a block
-    // cursor so it is obvious keystrokes are being captured.
+    // While typing, the status line becomes the prompt, with a block cursor so
+    // it is obvious that keystrokes are being captured rather than obeyed.
     if (a.filtering) {
-        try w.writeAll(color.accent ++ esc.bold);
-        var used = try writeCounted(w, " /", 2);
-        try w.writeAll(esc.reset ++ color.fg_text);
-        const query = a.filter();
-        used += try writeCounted(w, query, displayWidth(query));
-        try w.writeAll(esc.reverse);
-        used += try writeCounted(w, " ", 1);
-        try w.writeAll(esc.reset ++ color.fg_dim);
-        used += try writeCounted(w, "  enter to keep, esc to clear", 29);
-        if (width > used) try w.splatByteAll(' ', width - used);
-        try w.writeAll(esc.reset);
-        return;
+        return renderPrompt(w, width, "/", a.filter(), "enter to keep, esc to clear");
+    }
+    if (a.view == .prompt) {
+        return renderPrompt(w, width, a.promptLabel(), a.promptInput(), "enter to continue, esc to cancel");
     }
 
     var disk_buf: [256]u8 = undefined;
@@ -530,6 +522,24 @@ fn renderStatusLine(a: *const App, width: usize, w: *Writer) !void {
     try w.writeAll(if (a.status_is_error) color.red else color.fg_dim);
     var used = try writeCounted(w, " ", 1);
     used += try cell(w, msg, width -| 2);
+    if (width > used) try w.splatByteAll(' ', width - used);
+    try w.writeAll(esc.reset);
+}
+
+/// One line of text being typed: a label, what has been entered so far, a
+/// block cursor, and a reminder of how to finish.
+fn renderPrompt(w: *Writer, width: usize, label: []const u8, text: []const u8, hint: []const u8) !void {
+    try w.writeAll(color.accent ++ esc.bold);
+    var used = try writeCounted(w, " ", 1);
+    used += try writeCounted(w, label, displayWidth(label));
+    try w.writeAll(esc.reset ++ color.fg_text);
+    used += try writeCounted(w, " ", 1);
+    used += try writeCounted(w, text, displayWidth(text));
+    try w.writeAll(esc.reverse);
+    used += try writeCounted(w, " ", 1);
+    try w.writeAll(esc.reset ++ color.fg_dim);
+    used += try writeCounted(w, "  ", 2);
+    used += try writeCounted(w, hint, displayWidth(hint));
     if (width > used) try w.splatByteAll(' ', width - used);
     try w.writeAll(esc.reset);
 }
@@ -584,6 +594,7 @@ fn bytesOrZero(buf: []u8, n: u64) []const u8 {
 fn renderKeyHints(a: *const App, width: usize, w: *Writer) !void {
     const hints: []const [2][]const u8 = switch (a.view) {
         .confirm => &.{ .{ "y", "confirm" }, .{ "n/esc", "cancel" } },
+        .prompt => &.{ .{ "type", "a path" }, .{ "↵", "continue" }, .{ "esc", "cancel" } },
         .list => if (a.filtering)
             &.{ .{ "type", "to filter" }, .{ "↵", "keep" }, .{ "esc", "clear" } }
         else
@@ -633,6 +644,7 @@ fn listHints(a: *const App) []const [2][]const u8 {
             .{ "d", "delete" },
             .{ "l", "logs" },
             .{ "e", "shell" },
+            .{ "c", "copy" },
             .{ "P", "prune" },
             .{ "?", "help" },
             .{ "q", "quit" },
@@ -785,7 +797,7 @@ const help_text =
     \\
     \\  Containers and Stats tabs
     \\    s  start           S  stop           K  kill         d  delete
-    \\    l  logs            e  shell          P  prune stopped
+    \\    l  logs            e  shell          c  copy files    P  prune stopped
     \\
     \\  Stacks — containers grouped by label or shared name prefix
     \\    s  start all       S  stop all       d  delete all   enter  members

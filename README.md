@@ -114,7 +114,7 @@ It prints a URL carrying a token; open that. `--port` picks a different port,
 `0` picks a free one.
 
 The page lists the same six views, refreshes every three seconds, and offers
-start, stop, kill, delete, prune and a log viewer. It filters and sorts like
+start, stop, kill, delete, prune, copy and a log viewer. It filters and sorts like
 the TUI: type in the box to narrow the current tab, click a column header to
 sort by it, click again to reverse and a third time to return to the server's
 order. Clicking a row opens its details — the same sheet the TUI shows on
@@ -208,6 +208,7 @@ vi-style keys; `q` quits from anywhere.
 | `l` | Show the last 1000 log lines |
 | `f` | In the log view: start or stop following |
 | `e` | Open a shell (`/bin/sh`) in the selected container |
+| `c` | Copy files in or out of the selected container |
 | `s` | Start container, or every member of a stack |
 | `S` | Stop container, or every member of a stack |
 | `K` | Kill container |
@@ -242,6 +243,11 @@ Following a log runs `container logs --follow` as a child process, drained
 without blocking between key presses. Scrolling back detaches from the tail;
 returning to the bottom (or `G`) re-attaches. The retained buffer is capped at
 1 MB, dropping whole lines from the front.
+
+`c` copies files with `container copy`. One side is a path inside the
+container, written `name:/path`; the other is a path on this Mac. The TUI asks
+for the two paths in turn, pre-filling the container side from the selected
+row; the browser asks for both in one dialog.
 
 Opening a shell hands the terminal to the child: zcontainer leaves the
 alternate screen and raw mode, runs `container exec --interactive --tty`, and

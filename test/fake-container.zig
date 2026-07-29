@@ -16,8 +16,10 @@
 //! binaries from each other: `zig build test` runs them in parallel, and a
 //! single shared log had them overwriting one another's records.
 //!
-//! Failure paths are not simulated here — a test that wants a non-zero exit
-//! points `cli.exe` at `/usr/bin/false`, which is simpler and needs no flag.
+//! One failure is simulated: any invocation naming `fail_target` exits
+//! non-zero. Pointing `cli.exe` at `/usr/bin/false` breaks every command
+//! including the listing, which is a different scenario — this one lets a
+//! single action fail while the rest of the world keeps working.
 
 const std = @import("std");
 
@@ -34,6 +36,10 @@ fn logName(buf: []u8) ![]const u8 {
     return std.fmt.bufPrint(buf, "/tmp/zc-fake-{d}.log", .{std.c.getppid()});
 }
 
+/// A target that always fails, so a test can watch one action go wrong while
+/// listing still succeeds.
+pub const fail_target = "zc-fail";
+
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
@@ -41,6 +47,15 @@ pub fn main(init: std.process.Init) !void {
     const args = if (argv.len > 1) argv[1..] else &.{};
 
     try recordInvocation(arena, io, args);
+
+    for (args) |arg| {
+        if (!eq(arg, fail_target)) continue;
+        var err_buf: [256]u8 = undefined;
+        var err: std.Io.File.Writer = .init(.stderr(), io, &err_buf);
+        try err.interface.print("Error: no such container: {s}\n", .{fail_target});
+        try err.interface.flush();
+        std.process.exit(1);
+    }
 
     var out_buf: [64 * 1024]u8 = undefined;
     var out: std.Io.File.Writer = .init(.stdout(), io, &out_buf);

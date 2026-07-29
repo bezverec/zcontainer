@@ -102,6 +102,16 @@
     padding: 12px 16px; border-bottom: 1px solid var(--line);
     display: flex; align-items: center; gap: 12px; font-weight: 600;
   }
+  #copy-form { padding: 14px 16px; display: grid; gap: 10px; min-width: min(560px, 88vw); }
+  #copy-form label { display: grid; gap: 4px; font-size: 12px; color: var(--dim); }
+  #copy-form input {
+    font: inherit; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px;
+    padding: 6px 9px; border: 1px solid var(--line); border-radius: 7px;
+    background: var(--bg); color: var(--text);
+  }
+  #copy-form input:focus { outline: none; border-color: var(--accent); }
+  #copy-form .note { margin: 0; font-size: 12px; color: var(--dim); }
+  #copy-form .row { display: flex; gap: 8px; justify-content: flex-end; }
   dialog pre {
     margin: 0; padding: 14px 16px; max-height: 62vh; overflow: auto;
     font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px;
@@ -126,6 +136,20 @@
   </div>
   <div id="msg"></div>
 </main>
+
+<dialog id="copy-modal">
+  <div class="head"><span>Copy files</span></div>
+  <form method="dialog" id="copy-form">
+    <label>From<input name="source" autocomplete="off" spellcheck="false"></label>
+    <label>To<input name="destination" autocomplete="off" spellcheck="false"></label>
+    <p class="note">One side is a path inside the container, written
+      <code>name:/path</code>; the other is a path on this Mac.</p>
+    <div class="row">
+      <button class="act" value="cancel">Cancel</button>
+      <button class="act" id="copy-go" value="copy">Copy</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="modal">
   <div class="head"><span id="modal-title"></span><span class="spacer"></span>
@@ -364,6 +388,7 @@ function renderView() {
             ? act("Stop", "stop", c.id, true) + act("Kill", "kill", c.id, true)
             : act("Start", "start", c.id, false)}
           <button class="act" data-logs="${c.id}">Logs</button>
+          <button class="act" data-copy="${c.id}">Copy</button>
           ${act("Delete", "delete-container", c.id, true)}
         </div></td></tr>`),
     ));
@@ -500,6 +525,16 @@ document.addEventListener("click", async (ev) => {
     return;
   }
 
+  if (el.dataset.copy) {
+    const form = $("copy-form");
+    // Pre-fill the container side, the same way the TUI does.
+    form.source.value = `${el.dataset.copy}:`;
+    form.destination.value = "";
+    $("copy-modal").showModal();
+    form.source.focus();
+    return;
+  }
+
   if (el.dataset.stack) {
     const s = stacks().find((x) => x.name === el.dataset.stack);
     const kind = el.dataset.stackKind;
@@ -609,6 +644,24 @@ document.addEventListener("click", (ev) => {
   else if (!current.desc) sorts[tab] = { col, desc: true };
   else delete sorts[tab];
   render();
+});
+
+$("copy-form").addEventListener("submit", async (ev) => {
+  const form = ev.target;
+  // `method="dialog"` closes the dialog for us; only the Copy button acts.
+  if (form.returnValue === "cancel" || ev.submitter?.value !== "copy") return;
+  const source = form.source.value.trim();
+  const destination = form.destination.value.trim();
+  if (!source || !destination) return;
+
+  say(`copying ${source} → ${destination}…`);
+  try {
+    const q = new URLSearchParams({ source, destination });
+    const r = await api(`/api/copy?${q}`, { method: "POST" });
+    say(r.ok ? `copied ${source} → ${destination}` : `copy failed: ${r.message}`, !r.ok, true);
+  } catch (e) {
+    say(`copy failed: ${e.message}`, true, true);
+  }
 });
 
 $("refresh").onclick = refresh;

@@ -175,7 +175,7 @@ fn handleRequest(ctx: *Context, request: *std.http.Server.Request) !void {
     if (!originAllowed(ctx, request)) return respondText(request, .forbidden, "bad origin\n");
 
     if (std.mem.eql(u8, path, "/") or std.mem.eql(u8, path, "/index.html")) {
-        if (!tokenValid(ctx, queryParam(query, "token"))) {
+        if (!tokenValid(ctx, queryParam(arena.allocator(), query, "token"))) {
             return respondText(request, .unauthorized, "missing or bad token\n");
         }
         const body = try std.fmt.allocPrint(
@@ -201,6 +201,7 @@ fn handleRequest(ctx: *Context, request: *std.http.Server.Request) !void {
     if (std.mem.eql(u8, path, "/api/state")) return serveState(ctx, request, arena.allocator());
     if (std.mem.eql(u8, path, "/api/action")) return serveAction(ctx, request, arena.allocator(), query);
     if (std.mem.eql(u8, path, "/api/logs")) return serveLogs(ctx, request, arena.allocator(), query);
+    if (std.mem.eql(u8, path, "/api/copy")) return serveCopy(ctx, request, arena.allocator(), query);
 
     return respondText(request, .not_found, "not found\n");
 }
@@ -253,13 +254,56 @@ fn originAllowed(ctx: *Context, request: *std.http.Server.Request) bool {
     return false;
 }
 
-fn queryParam(query: []const u8, name: []const u8) ?[]const u8 {
+/// Returns the named parameter with percent-escapes resolved.
+///
+/// Decoding is not optional here: an image reference always contains `/` and
+/// `:`, which the browser escapes, and handing `docker.io%2Flibrary%2Fx%3A1`
+/// to `container` deletes nothing and reports a name nobody recognises.
+fn queryParam(arena: Allocator, query: []const u8, name: []const u8) ?[]const u8 {
     var it = std.mem.splitScalar(u8, query, '&');
     while (it.next()) |pair| {
         const eq = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
-        if (std.mem.eql(u8, pair[0..eq], name)) return pair[eq + 1 ..];
+        if (!std.mem.eql(u8, pair[0..eq], name)) continue;
+        return percentDecode(arena, pair[eq + 1 ..]) catch null;
     }
     return null;
+}
+
+fn percentDecode(arena: Allocator, text: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.ensureTotalCapacity(arena, text.len);
+
+    var i: usize = 0;
+    while (i < text.len) {
+        switch (text[i]) {
+            '+' => {
+                try out.append(arena, ' ');
+                i += 1;
+            },
+            '%' => {
+                // Too short to be an escape, or not hex: keep the character
+                // as typed rather than drop it.
+                if (i + 2 >= text.len) {
+                    try out.append(arena, text[i]);
+                    i += 1;
+                    continue;
+                }
+                const byte = std.fmt.parseInt(u8, text[i + 1 ..][0..2], 16) catch {
+                    // Not a valid escape: keep it as typed rather than guess.
+                    try out.append(arena, text[i]);
+                    i += 1;
+                    continue;
+                };
+                try out.append(arena, byte);
+                i += 3;
+            },
+            else => |c| {
+                try out.append(arena, c);
+                i += 1;
+            },
+        }
+    }
+    return out.items;
 }
 
 // ---------------------------------------------------------------------------
@@ -371,11 +415,11 @@ const Action = enum {
 fn serveAction(ctx: *Context, request: *std.http.Server.Request, arena: Allocator, query: []const u8) !void {
     if (request.head.method != .POST) return respondText(request, .method_not_allowed, "use POST\n");
 
-    const kind_text = queryParam(query, "kind") orelse
+    const kind_text = queryParam(arena, query, "kind") orelse
         return respondText(request, .bad_request, "missing kind\n");
     const kind = std.meta.stringToEnum(Action, kind_text) orelse
         return respondText(request, .bad_request, "unknown kind\n");
-    const target = queryParam(query, "target") orelse "";
+    const target = queryParam(arena, query, "target") orelse "";
 
     const argv: []const []const u8 = switch (kind) {
         .start => &.{ cli.exe, "start", target },
@@ -411,8 +455,39 @@ fn isPrune(kind: Action) bool {
     };
 }
 
+/// `container copy` between a container path (`name:/path`) and a local one.
+/// Both sides come from the request, so both are shown back in the result —
+/// a copy that silently went somewhere else would be worse than a failure.
+fn serveCopy(ctx: *Context, request: *std.http.Server.Request, arena: Allocator, query: []const u8) !void {
+    if (request.head.method != .POST) return respondText(request, .method_not_allowed, "use POST\n");
+
+    const source = queryParam(arena, query, "source") orelse
+        return respondText(request, .bad_request, "missing source\n");
+    const destination = queryParam(arena, query, "destination") orelse
+        return respondText(request, .bad_request, "missing destination\n");
+    if (source.len == 0 or destination.len == 0) {
+        return respondText(request, .bad_request, "empty path\n");
+    }
+
+    const result = cli.exec(
+        arena,
+        ctx.io,
+        &.{ cli.exe, "copy", source, destination },
+        .limited(256 * 1024),
+    ) catch return respondText(request, .internal_server_error, "could not run container\n");
+
+    var body: Io.Writer.Allocating = .init(arena);
+    try std.json.Stringify.value(.{
+        .ok = result.ok,
+        .message = if (result.ok) "copied" else firstLine(result.message()),
+        .source = source,
+        .destination = destination,
+    }, .{}, &body.writer);
+    return respondJson(request, body.writer.buffered());
+}
+
 fn serveLogs(ctx: *Context, request: *std.http.Server.Request, arena: Allocator, query: []const u8) !void {
-    const target = queryParam(query, "target") orelse
+    const target = queryParam(arena, query, "target") orelse
         return respondText(request, .bad_request, "missing target\n");
 
     const result = cli.exec(
@@ -617,7 +692,22 @@ test tokenValid {
 }
 
 test queryParam {
-    try std.testing.expectEqualStrings("x", queryParam("token=x", "token").?);
-    try std.testing.expectEqualStrings("b", queryParam("a=1&kind=b", "kind").?);
-    try std.testing.expectEqual(@as(?[]const u8, null), queryParam("a=1", "token"));
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try testing.expectEqualStrings("x", queryParam(a, "token=x", "token").?);
+    try testing.expectEqualStrings("b", queryParam(a, "a=1&kind=b", "kind").?);
+    try testing.expectEqual(@as(?[]const u8, null), queryParam(a, "a=1", "token"));
+
+    // An image reference survives the round trip through the browser, which
+    // escapes both the slashes and the colon.
+    try testing.expectEqualStrings(
+        "docker.io/library/postgres:18",
+        queryParam(a, "target=docker.io%2Flibrary%2Fpostgres%3A18", "target").?,
+    );
+    // A path with a space, as `+` and as an escape.
+    try testing.expectEqualStrings("/tmp/my file", queryParam(a, "p=%2Ftmp%2Fmy+file", "p").?);
+    // A stray percent is kept rather than guessed at.
+    try testing.expectEqualStrings("100%", queryParam(a, "p=100%", "p").?);
 }

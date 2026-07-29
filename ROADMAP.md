@@ -92,11 +92,24 @@ A published-ports column, and a detail sheet on clicking any row — the same
 fields the TUI puts behind `enter`, ports and mounts included. Rendered as
 text rather than markup, so a value cannot become markup.
 
-## v0.1 — the rest
+## Done: copy files — v0.1 complete
 
-**Copy files (`container cp`).** One command, no streaming, immediately useful.
-Needs a two-field prompt in the TUI, which is new UI machinery: there is no
-free-text input today beyond the filter.
+`c` runs `container copy`. The TUI asks for the two paths in turn, which
+needed a general single-line prompt it did not have; that machinery is what
+v0.3's "run a container" form will build on. The browser asks for both at
+once.
+
+Two bugs surfaced while testing it, neither in the copying:
+
+- A failed action's message was wiped by the refresh that runs immediately
+  afterwards, so every failure had been silent since the beginning. Only
+  progress notes and stale refresh errors are cleared now.
+- The web server never percent-decoded query parameters, so **deleting an
+  image from the browser had never worked**: a reference always contains `/`
+  and `:`, the browser escapes them, and `container` was handed
+  `docker.io%2Flibrary%2Fx%3A18`.
+
+**64 tests.**
 
 ## v0.2 — streaming in the browser
 
