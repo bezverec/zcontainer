@@ -595,7 +595,7 @@ fn splitReference(reference: []const u8) Reference {
 test splitReference {
     const cases = .{
         .{ "docker.io/library/postgres:18", "postgres", "18" },
-        .{ "pixel-football:latest", "pixel-football", "latest" },
+        .{ "shop-api:latest", "shop-api", "latest" },
         .{ "ghcr.io/apple/container-builder-shim/builder:0.12.0", "builder", "0.12.0" },
         .{ "alpine", "alpine", "latest" },
         .{ "localhost:5000/team/app", "app", "latest" },
@@ -744,7 +744,7 @@ test "parseDiskUsage" {
 }
 
 test namePrefix {
-    try std.testing.expectEqualStrings("pf", namePrefix("pf-app"));
+    try std.testing.expectEqualStrings("shop", namePrefix("shop-api"));
     try std.testing.expectEqualStrings("web", namePrefix("web_worker_1"));
     try std.testing.expectEqualStrings("", namePrefix("buildkit"));
     // Too short to be a meaningful group name.

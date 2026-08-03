@@ -23,7 +23,7 @@ buildkit              running     ghcr.io/apple/container-bui…  192.168.64.124
 shop-api              running     shop-api:latest               192.168.64.133  4    1.0 GB
 shop-db               running     docker.io/library/postgres:…  192.168.64.2    4    1.0 GB
 
- j/k move  s start  S stop  K kill  d delete  l logs  e shell  ↵ details  ? help
+ ↑↓ j/k move  space mark  ↵ details  / filter  o sort  s start  S stop      q quit
 ```
 
 ## Requirements

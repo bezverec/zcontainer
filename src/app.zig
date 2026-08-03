@@ -32,7 +32,7 @@ pub const Tab = enum {
 
 /// A group of related containers. Apple's `container` has no compose-style
 /// project concept, so membership is inferred: a label if one names a stack,
-/// otherwise a shared name prefix ("pf-app" and "pf-db" form stack "pf").
+/// otherwise a shared name prefix ("shop-api" and "shop-db" form stack "shop").
 pub const Stack = struct {
     name: []const u8,
     members: []const cli.Container,
@@ -298,7 +298,7 @@ pub const App = struct {
         return if (self.pending) |*p| p.prompt() else "";
     }
 
-    /// Progress text for the queued action, e.g. "stop pf-db…".
+    /// Progress text for the queued action, e.g. "stop shop-db…".
     pub fn pendingDescription(self: *const App, buf: []u8) []const u8 {
         const p = if (self.pending) |*pending| pending else return "working…";
         return std.fmt.bufPrint(buf, "{s} {s}…", .{ verb(p.kind), p.target() }) catch "working…";
@@ -2300,7 +2300,7 @@ test "each tab keeps its own filter" {
     defer app.deinit();
     app.refresh();
 
-    for ("pf") |c| app.filterAppend(c);
+    for ("shop") |c| app.filterAppend(c);
     try std.testing.expectEqual(@as(usize, 0), app.itemCount());
 
     // Narrowing the container list must not empty an unrelated tab.
@@ -2310,7 +2310,7 @@ test "each tab keeps its own filter" {
 
     // And the container query is still there on the way back.
     app.switchTab(.containers);
-    try std.testing.expectEqualStrings("pf", app.filter());
+    try std.testing.expectEqualStrings("shop", app.filter());
 }
 
 test "a filter survives a refresh" {
@@ -2354,21 +2354,21 @@ test stackNameFor {
         .stack_label = "",
     };
 
-    var pf_app = blank;
-    pf_app.id = "pf-app";
-    var pf_db = blank;
-    pf_db.id = "pf-db";
+    var shop_api = blank;
+    shop_api.id = "shop-api";
+    var shop_db = blank;
+    shop_db.id = "shop-db";
     var lonely = blank;
     lonely.id = "solo-one";
     var labelled = blank;
     labelled.id = "buildkit";
     labelled.stack_label = "builder";
 
-    const all = [_]cli.Container{ pf_app, pf_db, lonely, labelled };
+    const all = [_]cli.Container{ shop_api, shop_db, lonely, labelled };
 
     // A prefix two containers share names a stack.
-    try std.testing.expectEqualStrings("pf", stackNameFor(pf_app, &all));
-    try std.testing.expectEqualStrings("pf", stackNameFor(pf_db, &all));
+    try std.testing.expectEqualStrings("shop", stackNameFor(shop_api, &all));
+    try std.testing.expectEqualStrings("shop", stackNameFor(shop_db, &all));
     // A prefix nobody else shares does not.
     try std.testing.expectEqualStrings(standalone_stack, stackNameFor(lonely, &all));
     // A label always wins, even without a separator in the name.

@@ -1024,7 +1024,7 @@ test "Columns.total matches the width a rendered row emits" {
         const cols = columnsFor(.containers, width);
         var w: std.Io.Writer = .fixed(&buf);
         try renderContainerRow(.{
-            .id = "pf-app",
+            .id = "shop-api",
             .image = "docker.io/library/postgres:18",
             .state = "running",
             .os = "linux",
