@@ -355,4 +355,17 @@ this program against the CLI it wraps.
 
 ## License
 
-GPL-3.0. See [LICENSE](LICENSE).
+Copyright (C) 2026 Jan Houserek
+
+zcontainer is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. It is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the [LICENSE](LICENSE) file for the full terms.
+
+The `LICENSE` file is the GPL-3.0 text verbatim. Its closing appendix, "How to
+Apply These Terms to Your New Programs", is an instruction sheet rather than a
+form: the `<one line…>` and `<name of author>` placeholders in it describe what
+to put at the top of your *source* files, and filling them in stops the file
+matching the canonical text, which is how GitHub recognises the licence.
