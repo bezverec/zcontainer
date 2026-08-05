@@ -286,14 +286,22 @@ stack action reaching a container outside the stack. The fixtures also cover
 shapes a healthy machine never produces: a stopped container, one with no
 `status` key, an untagged image, an empty list and malformed JSON.
 
-Two invariants are pinned by tests because breaking them corrupts the whole
-display rather than one cell:
+A handful of layout and input invariants are pinned by their own tests,
+because breaking any of them corrupts the whole display rather than one cell:
 
 - A rendered row must be exactly as wide as its column layout claims, at every
   width from 40 upward. An overflowing row wraps and shifts every later frame.
 - Text drawn into a cell must be stripped of control characters. Log output is
   untrusted: a tab would desynchronise the column accounting, and a raw escape
   sequence could repaint the screen.
+- The key hint bar must keep its exit hint at every width, so the way out is
+  never the first thing dropped when space runs short.
+- Escape must not swallow the keystrokes after it, which on the list view are
+  commands.
+
+Each of those was written after the bug it describes, and the first two were
+checked by mutation — undo the fix and the test fails — so they are
+load-bearing rather than decorative.
 
 ## Known limitations
 

@@ -3,160 +3,96 @@
 Where zcontainer is heading, and why in that order. Nothing here is a promise;
 it is a record of what looks worth doing next and what it would cost.
 
-## Where it stands (v0.0.1)
+For what has already shipped, see the
+[releases](https://github.com/bezverec/zcontainer/releases) — this file is
+about what has not.
 
-Two front ends — a TUI and a browser page — over one shared data layer
-(`cli.zig`). Both can list containers, stacks, images, volumes, networks and
-live stats, and can start, stop, kill, delete and prune. The TUI additionally
-follows logs and opens a shell.
+## Where it stands (v0.1.0)
+
+Two front ends, a TUI and a browser page, over one shared data layer
+(`cli.zig`). Both list containers, stacks, images, volumes, networks and live
+stats; both start, stop, kill, delete, prune and copy files; both filter and
+sort per tab. The TUI additionally follows logs, marks rows for bulk actions,
+and opens a shell.
 
 Everything is read through `container --format json` and acted on by shelling
 out. There is no daemon protocol, no cache and no state on disk.
 
-## Done: a fake `container` — 32 tests
-
-This was the first priority, and it has landed.
-
-`cli.zig` is now split so that running a command and decoding its output are
-separate: every `listX` has a `parseX` counterpart taking text. Fixtures in
-`src/testdata/` cover shapes this machine has never produced — a **stopped**
-container, one with no `status` key at all, an untagged image, a registry
-reference with a port, an empty list, blank output and malformed JSON.
-
-`test/fake-container.zig` stands in for the real CLI, serving those fixtures
-and appending its argv to a log. `cli.exe` is a variable so tests can point at
-it. That covers what unit tests structurally cannot:
-
-- `delete` really passes `--force`, `prune` really targets the current tab, and
-  a stack action really touches every member and nothing outside it
-- a refresh issues no mutating command at all
-- a missing binary is reported rather than fatal (`cli.exe` aimed at a path
-  that does not exist)
-
-The `--force` assertion was checked by mutation: removing the flag makes the
-test fail, so it is load-bearing rather than decorative.
-
-Two of these tests failed on first run — both were wrong expectations about
-sort order in the test, not bugs. That ordering is now pinned.
-
-The web front end got the same treatment. `std.http.Server` works on a
-Reader/Writer pair rather than a socket, so a whole request can be driven
-through the real routing by feeding it bytes. The checks that previously
-existed only as `curl` commands in a terminal are now tests: no token, wrong
-token, a right-length wrong token, a query-string token where only a header
-will do, a foreign `Origin`, `GET` on an action, an unknown action, a missing
-target, an unknown path — and that a state response never contains a container
-environment.
-
-**50 tests, no daemon required.**
-
-## Done: CI
-
-`.github/workflows/ci.yml` builds and tests on macOS and Linux, checks
-formatting, and fails if a run leaves the working tree dirty. The fake's
-invocation log writes to a temporary directory precisely so it never can.
-
-Linux is compile-only in spirit — Apple's `container` runs nowhere else — but
-it earned its place immediately: it caught that `std.c.ioctl` needs libc named
-explicitly, which macOS had been hiding by always linking it.
-
-## Done: sort and filter (TUI)
-
-`/` filters the current tab, `o` steps the sort column and `O` reverses it.
-
-Rows now reach the screen through a per-tab index list rather than being read
-straight out of the data, so the cursor always means the row the user is
-looking at — an action after filtering targets what is shown, which a test
-pins down. Filters are per tab: a single shared one emptied the Images tab
-because the container list had been narrowed, which is not what "filter the
-current tab" leads anyone to expect. Numeric columns sort as numbers, so
-memory does not put "1.0 GB" before "256 MB".
-
-## Done: bulk selection, and the browser caught up
-
-`space` marks a row and steps down; every action key then applies to the marks
-and always confirms, `start` included, because a bulk operation deserves a
-second look whichever one it is. Marks are held by name rather than index —
-an index means a different container the moment the list reorders or something
-is created, and marks outlive refreshes.
-
-The browser front end now filters and sorts too, per tab, with the same
-numeric-aware ordering. The filter box keeps focus and caret across the
-three-second reload, which is only possible because the page updates in place.
-
-**60 tests.**
-
-## Done: the browser shows what the TUI does
-
-A published-ports column, and a detail sheet on clicking any row — the same
-fields the TUI puts behind `enter`, ports and mounts included. Rendered as
-text rather than markup, so a value cannot become markup.
-
-## Done: copy files — v0.1 complete
-
-`c` runs `container copy`. The TUI asks for the two paths in turn, which
-needed a general single-line prompt it did not have; that machinery is what
-v0.3's "run a container" form will build on. The browser asks for both at
-once.
-
-Two bugs surfaced while testing it, neither in the copying:
-
-- A failed action's message was wiped by the refresh that runs immediately
-  afterwards, so every failure had been silent since the beginning. Only
-  progress notes and stale refresh errors are cleared now.
-- The web server never percent-decoded query parameters, so **deleting an
-  image from the browser had never worked**: a reference always contains `/`
-  and `:`, the browser escapes them, and `container` was handed
-  `docker.io%2Flibrary%2Fx%3A18`.
-
-**64 tests.**
+64 tests, none of which need a container daemon, and CI on macOS and Linux.
 
 ## v0.2 — streaming in the browser
 
-`std.http.Server` has `respondWebSocket`, so this needs no new dependency —
-I checked. Two features fall out of the same machinery:
+`std.http.Server` has `respondWebSocket`, so this needs no new dependency.
+Two features fall out of the same machinery:
 
 **Live log follow**, matching what the TUI already does.
 
 **A shell in the browser**, running `container exec -it` with the pty bridged
 over the socket. This is the largest single piece of work on the list and the
 one most likely to be fiddly: terminal resizing, escape handling, and a
-front-end terminal emulator that has to be written by hand or vendored, which
-would break the zero-dependency property the web front end currently has.
-Worth weighing against simply telling people to use the TUI.
+front-end terminal emulator that has to be written by hand or vendored — which
+would cost the web front end its zero-dependency property. Worth weighing
+against simply telling people to use the TUI, which already does this well.
 
 ## v0.3 — creating things
 
-Today zcontainer manages containers that already exist. This is the biggest
-functional gap.
+zcontainer manages containers that already exist. This is the biggest
+functional gap, and the single-line prompt the copy feature needed is the
+groundwork for it.
 
 **Run a container.** `container run` takes about fifty distinct options. A form
-exposing all of them would be worse than the CLI. A useful subset — image, name, ports, env,
-volumes, cpus, memory, detach, entrypoint — covers most day-to-day use, with
-an escape hatch showing the exact command it will run so nothing is hidden.
+exposing all of them would be worse than the CLI. A useful subset — image,
+name, ports, env, volumes, cpus, memory, detach, entrypoint — covers most
+day-to-day use, with an escape hatch showing the exact command it will run so
+nothing is hidden.
 
 **Pull an image**, with progress. Needs the streaming work from v0.2.
 
 **Build from a Dockerfile.** Same streaming requirement, plus build context
-selection. `container builder` also has its own lifecycle worth surfacing —
-the builder shows up today as just another container.
+selection. `container builder` has its own lifecycle worth surfacing too; the
+builder shows up today as just another container.
 
-## Foundations, alongside the above
+## Foundations
 
-**Distributed binaries.** Releases carry no artifacts today, because a
-`-Dcpu=native` build is tuned to the machine that produced it. A `baseline`
-build attached to the release would let people skip installing Zig.
+**Distributed binaries.** Releases carry no artifacts, because a
+`-Dcpu=native` build is tuned to the machine that produced it and could fault
+on an older CPU. A `baseline` build attached to a release would let people skip
+installing Zig.
 
-**Wide characters.** Every glyph is counted as one column. A container named in
-CJK, or an emoji in a log line, will misalign a row. `cli.zig` is already safe;
-this is `ui.zig` arithmetic only.
+**Wide characters.** Every glyph counts as one column. A container named in CJK,
+or an emoji in a log line, will misalign a row. `cli.zig` is already safe; this
+is `ui.zig` arithmetic only.
 
-**Split `app.zig`.** It is past 1200 lines and now holds state, refresh, stack
-grouping, CPU sampling, pager and actions. Splitting follows naturally the
-next time one of those grows.
+**Split `app.zig`.** It is past 1700 lines of code before its 600 lines of
+tests, and holds state, refresh, filtering, sorting, marks, stack grouping, CPU
+sampling, the pager, prompts and actions. Splitting follows naturally the next
+time one of those grows.
 
 **Config file.** Refresh interval, default tab, the shell used by `e`, whether
-delete implies `--force`. All hard-coded today.
+delete implies `--force`. All hard-coded.
+
+## How it is tested
+
+Worth stating because it shapes what changes are safe to make.
+
+`test/fake-container.zig` stands in for the CLI: it serves the fixtures in
+`src/testdata/` and records the argv it was called with. That is what lets a
+test assert that `delete` really passes `--force`, that prune targets the
+current tab, and that a stack or bulk action touches every member and nothing
+outside it — mistakes no unit test would catch. `cli.exe` is a variable purely
+so tests can point at it.
+
+The fixtures deliberately cover shapes a healthy machine never produces: a
+stopped container, one with no `status` key at all, an untagged image, a
+registry reference with a port, an empty list, blank output, malformed JSON.
+Real bugs have come from the other direction too — an image whose creation date
+is the Unix epoch showed up only when running against a real daemon — so
+neither fixtures nor live runs are sufficient alone.
+
+Linux CI cannot run this program, since Apple's `container` exists nowhere
+else, but it earns its runner by catching portability slips: it found that
+`std.c.ioctl` needs libc named explicitly, which macOS hides by always linking
+it.
 
 ## Deliberately not planned
 
@@ -170,18 +106,21 @@ nothing more.
 TLS by design. Exposing it to a network would mean auth, transport security and
 an audit trail — a different product.
 
-**A daemon protocol.** Shelling out to `container` keeps zcontainer honest: the
-tool shows what the CLI reports, and every action is one the user could have
-typed. Talking to the daemon directly would be faster and much easier to get
-subtly wrong.
+**A daemon protocol.** Shelling out keeps zcontainer honest: the tool shows what
+the CLI reports, and every action is one the user could have typed. Talking to
+the daemon directly would be faster and much easier to get subtly wrong.
 
 ## Constraints worth remembering
 
 - `container inspect` returns the same shape the list endpoint already
-  provides, so a detail view needs no extra call — the TUI builds its detail
-  sheets from data it already has.
+  provides, so a detail view needs no extra call — both front ends build their
+  detail sheets from data they already have.
 - `container stats` gives cumulative CPU time and no ordering guarantee. Both
-  are already handled (deltas, and a stable sort), and both will bite again in
-  any new view that consumes it.
+  are handled (deltas, and a stable sort), and both will bite again in any new
+  view that consumes it.
+- `container copy` requires a running container; it fails on a stopped one.
 - `container system dns` requires administrator rights, so anything built on it
   has to degrade gracefully rather than assume it can run.
+- The JSON shapes above are unchanged between CLI 1.0.0 and 1.2.0, but nothing
+  guarantees that holds. The fixtures would keep passing while the real thing
+  broke, so a version bump is worth a manual shape check.
