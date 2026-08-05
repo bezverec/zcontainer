@@ -33,6 +33,30 @@ shop-db               running     docker.io/library/postgres:…  192.168.64.2  
   in both)
 - Zig 0.16.0
 
+## Installing Zig
+
+```bash
+brew install zig
+```
+
+That currently gives 0.16.0, which is what this needs.
+
+Be aware that Homebrew tracks the latest stable Zig, so once 0.17 lands the
+same command will give you that instead — and Zig still changes its standard
+library freely between releases, enough that a version bump is a porting job
+rather than a recompile. If you would rather pin the version, take the archive
+straight from [ziglang.org/download](https://ziglang.org/download/) and put it
+on your `PATH`:
+
+```bash
+curl -LO https://ziglang.org/download/0.16.0/zig-aarch64-macos-0.16.0.tar.xz
+tar xf zig-aarch64-macos-0.16.0.tar.xz
+sudo mv zig-aarch64-macos-0.16.0 /usr/local/zig-0.16.0
+sudo ln -sf /usr/local/zig-0.16.0/zig /usr/local/bin/zig
+```
+
+Zig needs nothing else installed; the archive is self-contained.
+
 ## Build and run
 
 ```bash
