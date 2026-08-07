@@ -18,7 +18,7 @@ and opens a shell.
 Everything is read through `container --format json` and acted on by shelling
 out. There is no daemon protocol, no cache and no state on disk.
 
-64 tests, none of which need a container daemon, and CI on macOS and Linux.
+66 tests, none of which need a container daemon, and CI on macOS and Linux.
 
 ## v0.2 — streaming in the browser
 
@@ -121,6 +121,10 @@ the daemon directly would be faster and much easier to get subtly wrong.
 - `container copy` requires a running container; it fails on a stopped one.
 - `container system dns` requires administrator rights, so anything built on it
   has to degrade gracefully rather than assume it can run.
-- The JSON shapes above are unchanged between CLI 1.0.0 and 1.2.0, but nothing
-  guarantees that holds. The fixtures would keep passing while the real thing
-  broke, so a version bump is worth a manual shape check.
+- The JSON shapes above are unchanged across CLI 1.0.0, 1.2.0 and 1.2.1, but
+  nothing guarantees that holds. The fixtures would keep passing while the real
+  thing broke, so a version bump is worth a manual shape check against a live
+  daemon — reading the upstream diff is not enough on its own.
+- Unknown fields are ignored when decoding, so a newer CLI adding keys cannot
+  break the parsers. That is what makes those upgrades cheap, and it now has a
+  test rather than being a setting nobody checks.

@@ -657,6 +657,41 @@ test "parseContainers decodes running, stopped and status-less containers" {
     try testing.expectEqualStrings("", db.ip);
 }
 
+test "unknown fields from a newer CLI are ignored, not fatal" {
+    var arena = testArena();
+    defer arena.deinit();
+    var err: ?[]const u8 = null;
+
+    // Shaped like a future `container` that has grown fields we know nothing
+    // about — `maskedPaths` and `readonlyPaths` are the ones 1.2.1 added — at
+    // every level we decode. Forward compatibility is what makes a CLI upgrade
+    // safe, so it is worth pinning rather than assuming.
+    const future =
+        \\[{
+        \\  "id": "web-api",
+        \\  "somethingNew": {"nested": [1, 2, 3]},
+        \\  "configuration": {
+        \\    "id": "web-api",
+        \\    "image": {"reference": "alpine:3.20", "unknownImageField": true},
+        \\    "resources": {"cpus": 2, "memoryInBytes": 536870912, "gpus": 1},
+        \\    "maskedPaths": ["/proc/kcore"],
+        \\    "readonlyPaths": ["/proc/sys"],
+        \\    "platform": {"architecture": "arm64", "os": "linux"}
+        \\  },
+        \\  "status": {"state": "running", "unknownStatusField": "x", "networks": []}
+        \\}]
+    ;
+
+    const list = try parseContainers(arena.allocator(), future, &err);
+    try testing.expectEqual(@as(?[]const u8, null), err);
+    try testing.expectEqual(@as(usize, 1), list.len);
+    try testing.expectEqualStrings("web-api", list[0].id);
+    try testing.expectEqualStrings("alpine:3.20", list[0].image);
+    try testing.expectEqualStrings("running", list[0].state);
+    try testing.expectEqual(@as(u64, 2), list[0].cpus);
+    try testing.expectEqual(@as(u64, 536870912), list[0].memory_bytes);
+}
+
 test "parseContainers accepts an empty list and blank output" {
     var arena = testArena();
     defer arena.deinit();
