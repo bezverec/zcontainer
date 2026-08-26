@@ -119,10 +119,13 @@ the daemon directly would be faster and much easier to get subtly wrong.
   are handled (deltas, and a stable sort), and both will bite again in any new
   view that consumes it.
 - `container copy` requires a running container; it fails on a stopped one.
+- zcontainer issues no registry operation, which is why 1.3.0 removing
+  `--scheme auto` passed straight through. Adding image pull would put the
+  project back in the path of those changes.
 - `container system dns` requires administrator rights, so anything built on it
   has to degrade gracefully rather than assume it can run.
-- The JSON shapes above are unchanged across CLI 1.0.0, 1.2.0 and 1.2.1, but
-  nothing guarantees that holds. The fixtures would keep passing while the real
+- The JSON shapes above are unchanged across CLI 1.0.0, 1.2.0, 1.2.1 and
+  1.3.0, but nothing guarantees that holds. The fixtures would keep passing while the real
   thing broke, so a version bump is worth a manual shape check against a live
   daemon — reading the upstream diff is not enough on its own.
 - Unknown fields are ignored when decoding, so a newer CLI adding keys cannot

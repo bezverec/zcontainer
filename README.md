@@ -29,8 +29,8 @@ shop-db               running     docker.io/library/postgres:…  192.168.64.2  
 ## Requirements
 
 - macOS with the Apple `container` CLI installed and on `PATH`
-  (verified against 1.0.0, 1.2.0 and 1.2.1; the JSON shapes it reads are the
-  same in all three)
+  (verified against 1.0.0, 1.2.0, 1.2.1 and 1.3.0; the JSON shapes it reads
+  are the same in all of them)
 - Zig 0.16.0
 
 ## Installing Zig
