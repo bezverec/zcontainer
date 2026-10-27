@@ -541,13 +541,60 @@ fn stackLabel(labels: std.json.Value) []const u8 {
 pub fn systemStatus(arena: Allocator, io: Io) []const u8 {
     const out = exec(arena, io, &.{ exe, "system", "status" }, .limited(64 * 1024)) catch return "unknown";
     if (!out.ok) return "not running";
-    var lines = std.mem.splitScalar(u8, out.stdout, '\n');
+    return parseSystemStatus(out.stdout);
+}
+
+/// Reads the `status` row out of the FIELD/VALUE table.
+///
+/// CLI 1.4.1 widened that table with `client.*`, `host.*`, `server.*`,
+/// `paths.*` and `containers.*` rows, but kept `status` first, and none of the
+/// new field names begin with it. Matching the whole first column rather than
+/// a prefix keeps it that way should one ever be added that does.
+pub fn parseSystemStatus(text: []const u8) []const u8 {
+    var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |line| {
-        if (!std.mem.startsWith(u8, line, "status")) continue;
-        const rest = std.mem.trim(u8, line["status".len..], " \t\r");
+        var cols = std.mem.tokenizeAny(u8, line, " \t\r");
+        const field = cols.next() orelse continue;
+        if (!std.mem.eql(u8, field, "status")) continue;
+        const rest = std.mem.trim(u8, line[field.len..], " \t\r");
         if (rest.len > 0) return rest;
     }
     return "unknown";
+}
+
+test parseSystemStatus {
+    // The two-column table every version up to 1.3 prints.
+    const old =
+        \\FIELD              VALUE
+        \\status             running
+        \\appRoot            /Users/someone/Library/Application Support/com.apple.container/
+        \\installRoot        /usr/local/
+        \\logRoot
+    ;
+    try testing.expectEqualStrings("running", parseSystemStatus(old));
+
+    // The wider table from 1.4.1 on, rows in the order the CLI emits them.
+    const wide =
+        \\FIELD               VALUE
+        \\status              running
+        \\client.version      1.6.1
+        \\client.build        release
+        \\client.commit       abc1234
+        \\host.os             Version 27.2 (Build 27C5000)
+        \\host.architecture   arm64
+        \\host.cpus           10
+        \\server.version      1.6.1
+        \\server.appName      container-apiserver
+        \\paths.appRoot       /Users/someone/Library/Application Support/com.apple.container/
+        \\containers.total    3
+        \\containers.running  1
+        \\images.total        8
+    ;
+    try testing.expectEqualStrings("running", parseSystemStatus(wide));
+
+    // A field that merely starts with "status" must not be mistaken for it.
+    try testing.expectEqualStrings("unknown", parseSystemStatus("statusDetail  degraded\n"));
+    try testing.expectEqualStrings("unknown", parseSystemStatus(""));
 }
 
 // ---------------------------------------------------------------------------
@@ -690,6 +737,30 @@ test "unknown fields from a newer CLI are ignored, not fatal" {
     try testing.expectEqualStrings("running", list[0].state);
     try testing.expectEqual(@as(u64, 2), list[0].cpus);
     try testing.expectEqual(@as(u64, 536870912), list[0].memory_bytes);
+}
+
+test "image references parse whether or not slashes are escaped" {
+    var arena = testArena();
+    defer arena.deinit();
+    var err: ?[]const u8 = null;
+
+    // CLI 1.4.1 stopped escaping forward slashes in JSON output. Earlier
+    // versions write `docker.io\/library\/...`, later ones the plain form,
+    // and both are still in use, so both have to decode to the same thing.
+    const escaped =
+        \\[{"configuration":{"name":"docker.io\/library\/postgres:18","descriptor":{"digest":"sha256:ab"}},"id":"x"}]
+    ;
+    const plain =
+        \\[{"configuration":{"name":"docker.io/library/postgres:18","descriptor":{"digest":"sha256:ab"}},"id":"x"}]
+    ;
+
+    for ([_][]const u8{ escaped, plain }) |json| {
+        const list = try parseImages(arena.allocator(), json, &err);
+        try testing.expectEqual(@as(?[]const u8, null), err);
+        try testing.expectEqualStrings("docker.io/library/postgres:18", list[0].reference);
+        try testing.expectEqualStrings("postgres", list[0].name);
+        try testing.expectEqualStrings("18", list[0].tag);
+    }
 }
 
 test "parseContainers accepts an empty list and blank output" {
