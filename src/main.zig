@@ -95,9 +95,17 @@ pub fn main(init: std.process.Init) !void {
         }
 
         const now = app_mod.monotonicMs(init.io);
-        if (app.view == .list and now - last_refresh >= auto_refresh_ms) {
+        // Opening the Stats tab samples straight away rather than leaving it
+        // empty until the next scheduled refresh.
+        if (app.view == .list and app.tab == .stats and !app.stats_loaded) {
+            screen.drawBusy(&app, size, "sampling stats…", .{});
             app.refresh();
-            last_refresh = now;
+            last_refresh = app_mod.monotonicMs(init.io);
+        } else if (app.view == .list and now - last_refresh >= auto_refresh_ms) {
+            app.refresh();
+            // Measured from the end of the refresh, so a slow one still leaves
+            // the full interval free for input rather than eating into it.
+            last_refresh = app_mod.monotonicMs(init.io);
         }
     }
 }

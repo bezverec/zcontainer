@@ -198,7 +198,7 @@ fn handleRequest(ctx: *Context, request: *std.http.Server.Request) !void {
         return respondText(request, .unauthorized, "missing or bad token\n");
     }
 
-    if (std.mem.eql(u8, path, "/api/state")) return serveState(ctx, request, arena.allocator());
+    if (std.mem.eql(u8, path, "/api/state")) return serveState(ctx, request, arena.allocator(), query);
     if (std.mem.eql(u8, path, "/api/action")) return serveAction(ctx, request, arena.allocator(), query);
     if (std.mem.eql(u8, path, "/api/logs")) return serveLogs(ctx, request, arena.allocator(), query);
     if (std.mem.eql(u8, path, "/api/copy")) return serveCopy(ctx, request, arena.allocator(), query);
@@ -320,6 +320,9 @@ const StateDto = struct {
     volumes: []const cli.Volume,
     networks: []const cli.Network,
     stats: []const cli.Stat,
+    /// False when `stats` was not asked for, so an empty list is not mistaken
+    /// for "nothing running".
+    stats_included: bool,
     disk: cli.DiskUsage,
     @"error": ?[]const u8,
 };
@@ -344,7 +347,12 @@ const ContainerDto = struct {
     mounts: []const cli.Mount,
 };
 
-fn serveState(ctx: *Context, request: *std.http.Server.Request, arena: Allocator) !void {
+/// `stats=1` asks for live statistics. They are left out otherwise because
+/// `container stats` spends two seconds taking a second sample whenever
+/// anything runs, and the page polls every three — so it asks only while the
+/// Stats tab is open.
+fn serveState(ctx: *Context, request: *std.http.Server.Request, arena: Allocator, query: []const u8) !void {
+    const want_stats = queryParam(arena, query, "stats") != null;
     var err: ?[]const u8 = null;
     const containers = cli.listContainers(arena, ctx.io, &err) catch &.{};
 
@@ -375,7 +383,8 @@ fn serveState(ctx: *Context, request: *std.http.Server.Request, arena: Allocator
         .images = cli.listImages(arena, ctx.io, &err) catch &.{},
         .volumes = cli.listVolumes(arena, ctx.io, &err) catch &.{},
         .networks = cli.listNetworks(arena, ctx.io, &err) catch &.{},
-        .stats = cli.listStats(arena, ctx.io, &err) catch &.{},
+        .stats = if (want_stats) cli.listStats(arena, ctx.io, &err) catch &.{} else &.{},
+        .stats_included = want_stats,
         .disk = cli.diskUsage(arena, ctx.io),
         .@"error" = err,
     };
@@ -680,6 +689,25 @@ test "state never serialises container environments" {
     // But the data the page actually needs is there.
     try testing.expect(std.mem.indexOf(u8, response, "web-api") != null);
     try testing.expect(std.mem.indexOf(u8, response, "\"stack\":\"shop\"") != null);
+}
+
+test "state samples stats only when asked to" {
+    const gpa = testing.allocator;
+    const plain = try testRequest(
+        gpa,
+        "GET /api/state HTTP/1.1\r\nHost: x\r\nx-zcontainer-token: " ++ test_token ++ "\r\n\r\n",
+    );
+    defer gpa.free(plain);
+    try testing.expect(std.mem.indexOf(u8, plain, "\"stats\":[]") != null);
+    try testing.expect(std.mem.indexOf(u8, plain, "\"stats_included\":false") != null);
+
+    const with_stats = try testRequest(
+        gpa,
+        "GET /api/state?stats=1 HTTP/1.1\r\nHost: x\r\nx-zcontainer-token: " ++ test_token ++ "\r\n\r\n",
+    );
+    defer gpa.free(with_stats);
+    try testing.expect(std.mem.indexOf(u8, with_stats, "\"stats\":[]") == null);
+    try testing.expect(std.mem.indexOf(u8, with_stats, "\"stats_included\":true") != null);
 }
 
 test tokenValid {

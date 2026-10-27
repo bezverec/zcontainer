@@ -189,6 +189,9 @@ pub const App = struct {
     stats: []cli.Stat = &.{},
     /// CPU percentages parallel to `stats`, derived from `cpu_samples`.
     stats_cpu: []f64 = &.{},
+    /// False when the last refresh skipped `container stats` because another
+    /// tab was showing; see `refresh`.
+    stats_loaded: bool = false,
     disk: cli.DiskUsage = .{},
     system: []const u8 = "unknown",
     /// Wall-clock seconds sampled at the last refresh; drives the age column.
@@ -314,6 +317,9 @@ pub const App = struct {
     }
 
     pub fn countFor(self: *const App, tab: Tab) usize {
+        // Stats lists one row per running container; when it was not sampled
+        // this refresh, count those rather than showing a misleading zero.
+        if (tab == .stats and !self.stats_loaded) return countRunning(self.containers);
         return self.visible[@backingInt(tab)].items.len;
     }
 
@@ -735,7 +741,13 @@ pub const App = struct {
         self.images = cli.listImages(a, self.io, &err) catch &.{};
         self.volumes = cli.listVolumes(a, self.io, &err) catch &.{};
         self.networks = cli.listNetworks(a, self.io, &err) catch &.{};
-        self.stats = cli.listStats(a, self.io, &err) catch &.{};
+        // `container stats` takes two samples two seconds apart whenever
+        // anything is running, to compute a CPU percentage this program
+        // works out for itself anyway. Paying that on every refresh froze
+        // every tab for two of every three seconds, so it is only fetched
+        // while its own tab is open.
+        self.stats_loaded = self.tab == .stats;
+        if (self.stats_loaded) self.stats = cli.listStats(a, self.io, &err) catch &.{};
         self.disk = cli.diskUsage(a, self.io);
         self.stacks = self.buildStacks(a) catch &.{};
         self.stats_cpu = self.deriveCpuPercent(a) catch &.{};
@@ -817,7 +829,10 @@ pub const App = struct {
 
         for (self.stats, out) |s, *percent| {
             percent.* = 0;
-            if (self.findSample(s.id)) |prev| {
+            if (self.findSample(s.id)) |prev| fresh: {
+                // A sample from before the tab was last left would average CPU
+                // over the whole absence and pass that off as the current load.
+                if (now_ms - prev.at_ms > max_sample_age_ms) break :fresh;
                 const elapsed_us = (now_ms - prev.at_ms) * std.time.us_per_ms;
                 const used_us = s.cpu_usec -| prev.cpu_usec;
                 if (elapsed_us > 0) {
@@ -1757,6 +1772,17 @@ fn daysFromCivil(year: i64, month: i64, day: i64) i64 {
     return era * 146097 + doe - 719468;
 }
 
+/// Oldest CPU sample still compared against: a few refresh intervals.
+const max_sample_age_ms = 10_000;
+
+fn countRunning(list: []const cli.Container) usize {
+    var n: usize = 0;
+    for (list) |c| {
+        if (c.isRunning()) n += 1;
+    }
+    return n;
+}
+
 /// Upper bound on the retained follow output, in bytes.
 const follow_buffer_limit = 1024 * 1024;
 
@@ -1865,8 +1891,9 @@ test "refresh runs exactly the expected read-only commands" {
     const calls = try h.invocations(arena.allocator());
     try std.testing.expect(Harness.contains(calls, "list --all --format json"));
     try std.testing.expect(Harness.contains(calls, "image list --format json"));
-    try std.testing.expect(Harness.contains(calls, "stats --no-stream --format json"));
     try std.testing.expect(Harness.contains(calls, "system df --format json"));
+    // Stats cost two seconds per call, so they wait for their own tab.
+    try std.testing.expect(!Harness.contains(calls, "stats --no-stream --format json"));
 
     // A refresh must never mutate anything.
     for (calls) |call| {
@@ -1874,6 +1901,33 @@ test "refresh runs exactly the expected read-only commands" {
             try std.testing.expect(!std.mem.startsWith(u8, call, mutating));
         }
     }
+}
+
+test "stats are sampled only while their tab is open" {
+    const gpa = std.testing.allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+
+    var app: App = .init(gpa, h.io);
+    defer app.deinit();
+    app.refresh();
+
+    // Unsampled, the tab count falls back to the running containers rather
+    // than reading zero.
+    try std.testing.expect(!app.stats_loaded);
+    try std.testing.expectEqual(@as(usize, 0), app.stats.len);
+    try std.testing.expectEqual(countRunning(app.containers), app.countFor(.stats));
+    try std.testing.expect(app.countFor(.stats) > 0);
+
+    app.tab = .stats;
+    app.refresh();
+    try std.testing.expect(app.stats_loaded);
+    try std.testing.expectEqual(@as(usize, 2), app.stats.len);
+    const calls = try h.invocations(arena.allocator());
+    try std.testing.expect(Harness.contains(calls, "stats --no-stream --format json"));
 }
 
 test "each action dispatches the command it claims to" {

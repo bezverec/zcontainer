@@ -29,8 +29,8 @@ shop-db               running     docker.io/library/postgres:…  192.168.64.2  
 ## Requirements
 
 - macOS with the Apple `container` CLI installed and on `PATH`
-  (verified against 1.0.0, 1.2.0, 1.2.1 and 1.3.0; the JSON shapes it reads
-  are the same in all of them)
+  (verified against 1.0.0, 1.2.0, 1.2.1, 1.3.0 and 1.6.1; the JSON shapes it
+  reads are the same in all of them)
 - Zig 0.17.0
 
 ## Installing Zig
@@ -205,6 +205,12 @@ inferred:
 than a single result.
 
 ### Stats
+
+Statistics are sampled only while this tab is open: `container stats` takes a
+second sample two seconds after the first whenever anything runs, so fetching
+them on every refresh would stall the whole interface. Until then the tab count
+shows the running containers, and each refresh on this tab takes about two
+seconds.
 
 `container stats` reports cumulative CPU time, so a percentage only appears
 once there are two samples — the first refresh after opening shows `0.00`.

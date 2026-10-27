@@ -305,6 +305,11 @@ function rowsFor(tab) {
 }
 
 function count(name) {
+  // Stats are only fetched while their tab is open; until then, the rows it
+  // would show are the running containers.
+  if (name === "stats" && state && !state.stats_included) {
+    return state.containers.filter((c) => c.state === "running").length;
+  }
   return rowsFor(name).length;
 }
 
@@ -325,7 +330,14 @@ function renderTabs() {
       const b = document.createElement("button");
       b.dataset.tab = name;
       b.innerHTML = `${name[0].toUpperCase() + name.slice(1)}<span class="count"></span>`;
-      b.onclick = () => { tab = name; syncFilterBox(); render(); };
+      b.onclick = () => {
+        tab = name;
+        syncFilterBox();
+        render();
+        // Stats are not in the regular poll, so fetch them now rather than
+        // showing an empty tab for up to three seconds.
+        if (name === "stats" && state && !state.stats_included) refresh();
+      };
       host.append(b);
     }
   }
@@ -483,7 +495,7 @@ function say(text, isError, isSticky = false) {
 
 async function refresh() {
   try {
-    state = await api("/api/state");
+    state = await api(tab === "stats" ? "/api/state?stats=1" : "/api/state");
     render();
     if (state.error) say(state.error, true);
     else if (!sticky) say("");
