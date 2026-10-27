@@ -121,8 +121,8 @@ pub const Terminal = struct {
         raw.lflag.ICANON = false;
         raw.lflag.IEXTEN = false;
         raw.lflag.ISIG = false;
-        raw.cc[@intFromEnum(posix.V.MIN)] = 0;
-        raw.cc[@intFromEnum(posix.V.TIME)] = 1;
+        raw.cc[@backingInt(posix.V.MIN)] = 0;
+        raw.cc[@backingInt(posix.V.TIME)] = 1;
         try posix.tcsetattr(self.in_fd, .FLUSH, raw);
         self.raw = true;
     }

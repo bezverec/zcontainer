@@ -31,7 +31,7 @@ shop-db               running     docker.io/library/postgres:…  192.168.64.2  
 - macOS with the Apple `container` CLI installed and on `PATH`
   (verified against 1.0.0, 1.2.0, 1.2.1 and 1.3.0; the JSON shapes it reads
   are the same in all of them)
-- Zig 0.16.0
+- Zig 0.17.0
 
 ## Installing Zig
 
@@ -39,20 +39,21 @@ shop-db               running     docker.io/library/postgres:…  192.168.64.2  
 brew install zig
 ```
 
-That currently gives 0.16.0, which is what this needs.
+That currently gives 0.17.0, which is what this needs.
 
-Be aware that Homebrew tracks the latest stable Zig, so once 0.17 lands the
-same command will give you that instead — and Zig still changes its standard
-library freely between releases, enough that a version bump is a porting job
-rather than a recompile. If you would rather pin the version, take the archive
-straight from [ziglang.org/download](https://ziglang.org/download/) and put it
-on your `PATH`:
+Homebrew tracks the latest stable Zig, so the same command will give you
+whatever is current once 0.18 lands. Zig does still change its standard
+library between releases — moving from 0.16 to 0.17 broke this build, though
+it only took two small edits to fix — so if you would rather pin the version,
+take the archive straight from
+[ziglang.org/download](https://ziglang.org/download/) and put it on your
+`PATH`:
 
 ```bash
-curl -LO https://ziglang.org/download/0.16.0/zig-aarch64-macos-0.16.0.tar.xz
-tar xf zig-aarch64-macos-0.16.0.tar.xz
-sudo mv zig-aarch64-macos-0.16.0 /usr/local/zig-0.16.0
-sudo ln -sf /usr/local/zig-0.16.0/zig /usr/local/bin/zig
+curl -LO https://ziglang.org/download/0.17.0/zig-aarch64-macos-0.17.0.tar.xz
+tar xf zig-aarch64-macos-0.17.0.tar.xz
+sudo mv zig-aarch64-macos-0.17.0 /usr/local/zig-0.17.0
+sudo ln -sf /usr/local/zig-0.17.0/zig /usr/local/bin/zig
 ```
 
 Zig needs nothing else installed; the archive is self-contained.

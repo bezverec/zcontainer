@@ -356,7 +356,7 @@ fn handleListKey(app: *App, screen: *Screen, key: term.Key, size: term.Size) voi
             'G' => app.cursorTo(.last),
             ctrl_d => app.moveCursor(half),
             ctrl_u => app.moveCursor(-half),
-            '1'...'6' => app.switchTab(@enumFromInt(c - '1')),
+            '1'...'6' => app.switchTab(@fromBackingInt(@intCast(c - '1'))),
             ' ' => app.toggleMark(),
             '/' => app.beginFilter(),
             'o' => app.cycleSort(),

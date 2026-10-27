@@ -16,7 +16,7 @@ pub const Tab = enum {
     networks,
     stats,
 
-    pub const count = @typeInfo(Tab).@"enum".fields.len;
+    pub const count = @typeInfo(Tab).@"enum".field_names.len;
 
     pub fn title(self: Tab) []const u8 {
         return switch (self) {
@@ -310,11 +310,11 @@ pub const App = struct {
 
     /// Rows the user can actually see and act on, after filtering.
     pub fn itemCount(self: *const App) usize {
-        return self.visible[@intFromEnum(self.tab)].items.len;
+        return self.visible[@backingInt(self.tab)].items.len;
     }
 
     pub fn countFor(self: *const App, tab: Tab) usize {
-        return self.visible[@intFromEnum(tab)].items.len;
+        return self.visible[@backingInt(tab)].items.len;
     }
 
     /// Total rows a tab holds before filtering, for the "3 of 12" hint.
@@ -331,12 +331,12 @@ pub const App = struct {
 
     /// Translates a screen row into an index in the underlying list.
     pub fn sourceIndex(self: *const App, tab: Tab, row: usize) ?usize {
-        const rows = self.visible[@intFromEnum(tab)].items;
+        const rows = self.visible[@backingInt(tab)].items;
         return if (row < rows.len) rows[row] else null;
     }
 
     fn selectedSource(self: *const App) ?usize {
-        return self.sourceIndex(self.tab, self.cursor[@intFromEnum(self.tab)]);
+        return self.sourceIndex(self.tab, self.cursor[@backingInt(self.tab)]);
     }
 
     // -----------------------------------------------------------------------
@@ -348,7 +348,7 @@ pub const App = struct {
     }
 
     pub fn filterFor(self: *const App, tab: Tab) []const u8 {
-        const i = @intFromEnum(tab);
+        const i = @backingInt(tab);
         return self.filter_buf[i][0..self.filter_len[i]];
     }
 
@@ -363,12 +363,12 @@ pub const App = struct {
     /// Leaves filter mode and drops this tab's query, restoring its full list.
     pub fn cancelFilter(self: *App) void {
         self.filtering = false;
-        self.filter_len[@intFromEnum(self.tab)] = 0;
+        self.filter_len[@backingInt(self.tab)] = 0;
         self.rebuildVisible();
     }
 
     pub fn filterAppend(self: *App, byte: u8) void {
-        const i = @intFromEnum(self.tab);
+        const i = @backingInt(self.tab);
         if (self.filter_len[i] >= self.filter_buf[i].len) return;
         self.filter_buf[i][self.filter_len[i]] = byte;
         self.filter_len[i] += 1;
@@ -376,7 +376,7 @@ pub const App = struct {
     }
 
     pub fn filterBackspace(self: *App) void {
-        const i = @intFromEnum(self.tab);
+        const i = @backingInt(self.tab);
         if (self.filter_len[i] == 0) return;
         self.filter_len[i] -= 1;
         self.rebuildVisible();
@@ -385,7 +385,7 @@ pub const App = struct {
     /// Steps the sort column forward, wrapping back to the natural order the
     /// list arrived in rather than sticking on the last column.
     pub fn cycleSort(self: *App) void {
-        const i = @intFromEnum(self.tab);
+        const i = @backingInt(self.tab);
         const columns = sortColumnCount(self.tab);
         self.sort_column[i] = if (self.sort_column[i]) |current|
             (if (current + 1 >= columns) null else current + 1)
@@ -395,13 +395,13 @@ pub const App = struct {
     }
 
     pub fn toggleSortDirection(self: *App) void {
-        const i = @intFromEnum(self.tab);
+        const i = @backingInt(self.tab);
         self.sort_desc[i] = !self.sort_desc[i];
         self.rebuildVisible();
     }
 
     pub fn sortLabel(self: *const App, buf: []u8) []const u8 {
-        const i = @intFromEnum(self.tab);
+        const i = @backingInt(self.tab);
         const column = self.sort_column[i] orelse return "";
         return std.fmt.bufPrint(buf, "sorted by {s} {s}", .{
             sortColumnName(self.tab, column),
@@ -413,7 +413,7 @@ pub const App = struct {
     /// Cheap enough to redo wholesale on each keystroke.
     fn rebuildVisible(self: *App) void {
         for (0..Tab.count) |i| {
-            const tab: Tab = @enumFromInt(i);
+            const tab: Tab = @fromBackingInt(@intCast(i));
             const needle = self.filterFor(tab);
             const rows = &self.visible[i];
             rows.clearRetainingCapacity();
@@ -580,14 +580,14 @@ pub const App = struct {
 
     pub fn isMarked(self: *const App, tab: Tab, index: usize) bool {
         const name = self.rowName(tab, index) orelse return false;
-        for (self.marked[@intFromEnum(tab)].items) |marked| {
+        for (self.marked[@backingInt(tab)].items) |marked| {
             if (std.mem.eql(u8, marked, name)) return true;
         }
         return false;
     }
 
     pub fn markedCount(self: *const App, tab: Tab) usize {
-        return self.marked[@intFromEnum(tab)].items.len;
+        return self.marked[@backingInt(tab)].items.len;
     }
 
     /// Marks or unmarks the row under the cursor and steps down, so a run of
@@ -595,7 +595,7 @@ pub const App = struct {
     pub fn toggleMark(self: *App) void {
         const index = self.selectedSource() orelse return;
         const name = self.rowName(self.tab, index) orelse return;
-        const list = &self.marked[@intFromEnum(self.tab)];
+        const list = &self.marked[@backingInt(self.tab)];
 
         for (list.items, 0..) |marked, i| {
             if (!std.mem.eql(u8, marked, name)) continue;
@@ -614,7 +614,7 @@ pub const App = struct {
     }
 
     pub fn clearMarks(self: *App, tab: Tab) void {
-        const list = &self.marked[@intFromEnum(tab)];
+        const list = &self.marked[@backingInt(tab)];
         for (list.items) |name| self.gpa.free(name);
         list.clearRetainingCapacity();
     }
@@ -757,7 +757,7 @@ pub const App = struct {
 
     fn clampCursor(self: *App) void {
         for (0..Tab.count) |i| {
-            const n = self.countFor(@enumFromInt(i));
+            const n = self.countFor(@fromBackingInt(@intCast(i)));
             if (self.cursor[i] >= n) self.cursor[i] = n -| 1;
         }
     }
@@ -857,7 +857,7 @@ pub const App = struct {
     pub fn moveCursor(self: *App, delta: isize) void {
         const n = self.itemCount();
         if (n == 0) return;
-        const i = &self.cursor[@intFromEnum(self.tab)];
+        const i = &self.cursor[@backingInt(self.tab)];
         const cur: isize = @intCast(i.*);
         const max: isize = @intCast(n - 1);
         i.* = @intCast(std.math.clamp(cur + delta, 0, max));
@@ -866,7 +866,7 @@ pub const App = struct {
     pub fn cursorTo(self: *App, pos: enum { first, last }) void {
         const n = self.itemCount();
         if (n == 0) return;
-        self.cursor[@intFromEnum(self.tab)] = switch (pos) {
+        self.cursor[@backingInt(self.tab)] = switch (pos) {
             .first => 0,
             .last => n - 1,
         };
@@ -878,17 +878,17 @@ pub const App = struct {
     }
 
     pub fn nextTab(self: *App, delta: isize) void {
-        const cur: isize = @intCast(@intFromEnum(self.tab));
+        const cur: isize = @intCast(@backingInt(self.tab));
         const n: isize = @intCast(Tab.count);
         const next = @mod(cur + delta + n, n);
-        self.switchTab(@enumFromInt(@as(usize, @intCast(next))));
+        self.switchTab(@fromBackingInt(@intCast(@as(usize, @intCast(next)))));
     }
 
     /// Keeps the cursor inside the visible window of `height` rows.
     pub fn syncScroll(self: *App, height: usize) void {
         if (height == 0) return;
-        const i = self.cursor[@intFromEnum(self.tab)];
-        const s = &self.scroll[@intFromEnum(self.tab)];
+        const i = self.cursor[@backingInt(self.tab)];
+        const s = &self.scroll[@backingInt(self.tab)];
         if (i < s.*) s.* = i;
         if (i >= s.* + height) s.* = i - height + 1;
 
@@ -1317,7 +1317,7 @@ pub const App = struct {
     /// Applies the action to every marked row, then clears the marks so the
     /// next keystroke does not silently repeat a bulk operation.
     fn runMarkedAction(self: *App, a: Allocator, kind: ActionKind) void {
-        const list = self.marked[@intFromEnum(self.tab)];
+        const list = self.marked[@backingInt(self.tab)];
         var ok: usize = 0;
         var failed: usize = 0;
         var last_error: []const u8 = "";
@@ -1899,7 +1899,7 @@ test "each action dispatches the command it claims to" {
         defer app.deinit();
         app.refresh();
         app.tab = .containers;
-        app.cursor[@intFromEnum(Tab.containers)] = 0; // web-api, the running one
+        app.cursor[@backingInt(Tab.containers)] = 0; // web-api, the running one
 
         app.request(case.kind);
         if (app.pending != null) app.runPending();
@@ -1962,7 +1962,7 @@ test "a stack action touches every member and nothing else" {
         if (std.mem.eql(u8, stack.name, "shop")) break i;
     } else return error.StackNotFound;
 
-    app.cursor[@intFromEnum(Tab.stacks)] = shop;
+    app.cursor[@backingInt(Tab.stacks)] = shop;
     app.request(.stack_stop);
     try std.testing.expect(app.pending != null);
     app.runPending();
@@ -2008,7 +2008,7 @@ test "filtering hides rows and keeps actions pointed at what is shown" {
 
     // The cursor is at row 0, which is now web-db rather than web-api. An
     // action must follow the visible row, not the underlying index.
-    app.cursor[@intFromEnum(Tab.containers)] = 0;
+    app.cursor[@backingInt(Tab.containers)] = 0;
     app.request(.container_delete);
     try std.testing.expect(app.pending != null);
     app.runPending();
@@ -2088,8 +2088,8 @@ test "memory sorts numerically, not as rendered text" {
 
     // Column 5 is memory: 256 MB, 1 GB and 2 GB in the fixture. Sorted as
     // text, "1.0 GB" would come before "256 MB".
-    app.sort_column[@intFromEnum(Tab.containers)] = 5;
-    app.sort_desc[@intFromEnum(Tab.containers)] = false;
+    app.sort_column[@backingInt(Tab.containers)] = 5;
+    app.sort_desc[@backingInt(Tab.containers)] = false;
     app.rebuildVisible();
 
     var previous: u64 = 0;
@@ -2110,7 +2110,7 @@ test "the sort column wraps back to the natural order" {
     defer app.deinit();
     app.refresh();
 
-    const tab = @intFromEnum(Tab.containers);
+    const tab = @backingInt(Tab.containers);
     try std.testing.expectEqual(@as(?u8, null), app.sort_column[tab]);
     for (0..sortColumnCount(.containers)) |i| {
         app.cycleSort();
@@ -2131,7 +2131,7 @@ test "the copy prompt collects two paths and runs container copy" {
     var app: App = .init(gpa, h.io);
     defer app.deinit();
     app.refresh();
-    app.cursor[@intFromEnum(Tab.containers)] = 0;
+    app.cursor[@backingInt(Tab.containers)] = 0;
 
     // The container side is pre-filled, so only the path has to be typed.
     app.beginCopy();
@@ -2218,7 +2218,7 @@ test "a bulk action hits every marked row and nothing else" {
     const third = try expect_alloc.dupe(u8, app.containers[app.sourceIndex(.containers, 2).?].id);
 
     // Mark the first two rows; toggleMark steps down, so two presses do it.
-    app.cursor[@intFromEnum(Tab.containers)] = 0;
+    app.cursor[@backingInt(Tab.containers)] = 0;
     app.toggleMark();
     app.toggleMark();
     try std.testing.expectEqual(@as(usize, 2), app.markedCount(.containers));
@@ -2248,7 +2248,7 @@ test "marks are held by name, so a reorder cannot move them" {
     defer app.deinit();
     app.refresh();
 
-    app.cursor[@intFromEnum(Tab.containers)] = 0;
+    app.cursor[@backingInt(Tab.containers)] = 0;
     const marked_name = app.containers[app.sourceIndex(.containers, 0).?].id;
     app.toggleMark();
 
@@ -2276,17 +2276,17 @@ test "toggling twice leaves nothing marked" {
     defer app.deinit();
     app.refresh();
 
-    app.cursor[@intFromEnum(Tab.containers)] = 0;
+    app.cursor[@backingInt(Tab.containers)] = 0;
     app.toggleMark();
     try std.testing.expectEqual(@as(usize, 1), app.markedCount(.containers));
 
-    app.cursor[@intFromEnum(Tab.containers)] = 0;
+    app.cursor[@backingInt(Tab.containers)] = 0;
     app.toggleMark();
     try std.testing.expectEqual(@as(usize, 0), app.markedCount(.containers));
 
     // With nothing marked, an action falls back to the cursor row, and start
     // runs without a confirmation the way it always has.
-    app.cursor[@intFromEnum(Tab.containers)] = 0;
+    app.cursor[@backingInt(Tab.containers)] = 0;
     app.request(.container_start);
     try std.testing.expect(app.pending == null);
 }

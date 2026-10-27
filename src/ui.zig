@@ -60,8 +60,8 @@ fn renderList(a: *const App, size: term.Size, w: *Writer) !void {
     const cols = columnsFor(a.tab, width -| mark_width);
     try renderColumnHeader(cols, width, w);
 
-    const start = a.scroll[@intFromEnum(a.tab)];
-    const selected = a.cursor[@intFromEnum(a.tab)];
+    const start = a.scroll[@backingInt(a.tab)];
+    const selected = a.cursor[@backingInt(a.tab)];
     const n = a.itemCount();
 
     for (0..height) |row| {
@@ -171,7 +171,7 @@ fn renderTabs(a: *const App, width: usize, w: *Writer) !void {
     var used: usize = 0;
 
     for (0..Tab.count) |i| {
-        const tab: Tab = @enumFromInt(i);
+        const tab: Tab = @fromBackingInt(@intCast(i));
         const count = a.countFor(tab);
 
         var buf: [48]u8 = undefined;

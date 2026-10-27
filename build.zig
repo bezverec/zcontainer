@@ -42,14 +42,14 @@ pub fn build(b: *std.Build) void {
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    run_cmd.addPassthruArgs();
 
     const run_step = b.step("run", "Run zcontainer");
     run_step.dependOn(&run_cmd.step);
 
     const run_web = b.addRunArtifact(web_exe);
     run_web.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_web.addArgs(args);
+    run_web.addPassthruArgs();
 
     const run_web_step = b.step("web", "Run zcontainer-web");
     run_web_step.dependOn(&run_web.step);
