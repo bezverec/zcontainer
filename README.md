@@ -306,6 +306,17 @@ which is why the browser front end reuses it without a single change.
 zig build test
 ```
 
+Before pushing, run everything CI checks — formatting, the tests, a
+ReleaseSafe build, and a cross-compile of the binaries and tests for x86_64 and
+aarch64 Linux:
+
+```bash
+./scripts/check.sh
+```
+
+CI runs the same steps on macOS and Linux runners, but only when started by
+hand from the Actions tab.
+
 The suite needs no container daemon. `test/fake-container.zig` stands in for
 the CLI: it serves the fixtures in `src/testdata/` and appends every argv it
 was called with to a log, so a test can assert which command the program

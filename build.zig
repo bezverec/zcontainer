@@ -107,6 +107,11 @@ pub fn build(b: *std.Build) void {
     const web_tests = b.addTest(.{ .root_module = web_test_module });
     const run_web_tests = b.addRunArtifact(web_tests);
 
+    // A foreign target (`-Dtarget=x86_64-linux-gnu` on a Mac) still compiles
+    // the tests and skips running them, so portability slips show up locally.
+    run_exe_tests.skip_foreign_checks = true;
+    run_web_tests.skip_foreign_checks = true;
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_web_tests.step);

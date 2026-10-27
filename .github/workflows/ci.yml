@@ -2,10 +2,10 @@ name: CI
 
 # The test suite stands in for the `container` CLI with a fake, so none of
 # this needs a container daemon — which is what makes CI possible at all.
+#
+# Started by hand only (Actions tab, or `gh workflow run ci.yml`) so pushes do
+# not spend runner minutes. `scripts/check.sh` runs the same checks locally.
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 jobs:

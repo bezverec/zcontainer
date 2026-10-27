@@ -18,7 +18,8 @@ and opens a shell.
 Everything is read through `container --format json` and acted on by shelling
 out. There is no daemon protocol, no cache and no state on disk.
 
-72 tests, none of which need a container daemon, and CI on macOS and Linux.
+72 tests, none of which need a container daemon; `scripts/check.sh` runs the
+CI checks locally, and CI on macOS and Linux is started by hand.
 
 ## v0.2 — streaming in the browser
 
@@ -92,7 +93,9 @@ neither fixtures nor live runs are sufficient alone.
 Linux CI cannot run this program, since Apple's `container` exists nowhere
 else, but it earns its runner by catching portability slips: it found that
 `std.c.ioctl` needs libc named explicitly, which macOS hides by always linking
-it.
+it. `scripts/check.sh` covers the same ground without a runner by
+cross-compiling the binaries and the tests for Linux; only running the tests
+there is left to CI.
 
 ## Deliberately not planned
 
