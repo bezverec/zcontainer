@@ -7,7 +7,7 @@ For what has already shipped, see the
 [releases](https://github.com/bezverec/zcontainer/releases) — this file is
 about what has not.
 
-## Where it stands (v0.1.0)
+## Where it stands (v0.1.1)
 
 Two front ends, a TUI and a browser page, over one shared data layer
 (`cli.zig`). Both list containers, stacks, images, volumes, networks and live
